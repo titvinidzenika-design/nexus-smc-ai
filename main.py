@@ -103,7 +103,7 @@ def poll_telegram_updates(subscribed_users):
                         
                         if text == "/start" and chat_id:
                             subscribed_users.add(chat_id)
-                            send_telegram_message(chat_id, "🤖 **Nexus SMC AI Active 24/7!**\n\nბოტი დაიწყებს ავტომატურ სკანირებას (BTC/USDT).")
+                            send_telegram_message(chat_id, "🤖 **Nexus SMC AI Active 24/7!**\n\nბოტი დაიწყებს ავტომატურ სკანირებას ყოველ 15 წუთში ერთხელ (BTC/USDT).")
         except Exception as e:
             logging.error(f"Polling error: {e}")
         time.sleep(2)
@@ -120,7 +120,8 @@ def scan_loop(subscribed_users):
                         send_telegram_message(u_id, msg)
         except Exception as e:
             logging.error(f"Scan loop error: {e}")
-        time.sleep(60)
+        # 900 წამი = 15 წუთი (შემდეგ შემოწმებამდე)
+        time.sleep(900)
 
 if __name__ == "__main__":
     Thread(target=run_web_server, daemon=True).start()
@@ -131,3 +132,4 @@ if __name__ == "__main__":
     
     logging.info("🚀 Nexus SMC AI Engine Started...")
     poll_telegram_updates(subscribed_users)
+
