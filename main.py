@@ -1,22 +1,19 @@
-
 import os
-import asyncio
+import time
 import logging
 import requests
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from threading import Thread
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
 
 logging.basicConfig(level=logging.INFO)
 
-# Web სერვერი Render-ის Port Check-ისთვის
+# Web Server Render-ის პორტისთვის
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.send_header("Content-type", "text/plain")
         self.end_headers()
-        self.wfile.write(b"Nexus SMC AI Engine is Running 24/7!")
+        self.wfile.write(b"Nexus SMC AI Engine is Live!")
 
     def log_message(self, format, *args):
         return
@@ -27,15 +24,28 @@ def run_web_server():
     server.serve_forever()
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
-SUBSCRIBED_USERS = set()
+
+def send_telegram_message(chat_id, text):
+    if not TELEGRAM_BOT_TOKEN:
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "Markdown"
+    }
+    try:
+        requests.post(url, json=payload, timeout=10)
+    except Exception as e:
+        logging.error(f"Error sending telegram msg: {e}")
 
 def fetch_binance_ohlcv(symbol="BTCUSDT", interval="15m", limit=30):
     url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
     try:
-        response = requests.get(url, timeout=10)
-        return response.json()
+        res = requests.get(url, timeout=10)
+        return res.json()
     except Exception as e:
-        logging.error(f"Error fetching data: {e}")
+        logging.error(f"Error fetching binance data: {e}")
         return None
 
 def analyze_symbol(symbol_raw="BTCUSDT", symbol_display="BTC/USDT"):
@@ -77,46 +87,47 @@ def analyze_symbol(symbol_raw="BTCUSDT", symbol_display="BTC/USDT"):
         "factors": factors
     }
 
-async def auto_scan_loop(context: ContextTypes.DEFAULT_TYPE):
-    if not SUBSCRIBED_USERS:
-        return
-    symbols = [("BTCUSDT", "BTC/USDT")]
-    for s_raw, s_disp in symbols:
-        res = analyze_symbol(s_raw, s_disp)
-        if res and res["score"] >= 80:
-            factors_text = "\n".join(res["factors"])
-            msg = f"🤖 **NEXUS SMC AI SIGNAL**\n\n🔹 `{res['symbol']}` ({res['direction']})\n🎯 **Score:** `{res['score']}%`\n\n{factors_text}\n\n💰 **Entry:** `${res['price']}`\n🛑 **SL:** `${res['sl']}`\n🎯 **TP1:** `${res['tp1']}`"
-            for u_id in SUBSCRIBED_USERS:
-                try:
-                    await context.bot.send_message(chat_id=u_id, text=msg, parse_mode="Markdown")
-                except Exception as e:
-                    logging.error(f"Error sending msg: {e}")
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    SUBSCRIBED_USERS.add(update.effective_chat.id)
-    await update.message.reply_text("🤖 **Nexus SMC AI Active 24/7!**\n\nბოტი დაიწყებს ავტომატურ სკანირებას (BTC/USDT).", parse_mode="Markdown")
-
-async def main_async():
-    if not TELEGRAM_BOT_TOKEN:
-        logging.error("❌ CRITICAL ERROR: TELEGRAM_BOT_TOKEN is missing!")
-        return
-
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    
-    if application.job_queue:
-        application.job_queue.run_repeating(auto_scan_loop, interval=60, first=5)
-
-    logging.info("🚀 Nexus SMC AI Bot is starting...")
-    
-    await application.initialize()
-    await application.start()
-    await application.updater.start_polling(drop_pending_updates=True)
-    
-    # ამუშავებს ბოტს მუდმივ რეჟიმში
+def poll_telegram_updates(subscribed_users):
+    offset = 0
     while True:
-        await asyncio.sleep(3600)
+        try:
+            if TELEGRAM_BOT_TOKEN:
+                url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates?offset={offset}&timeout=30"
+                res = requests.get(url, timeout=35).json()
+                if res.get("ok"):
+                    for result in res.get("result", []):
+                        offset = result["update_id"] + 1
+                        message = result.get("message", {})
+                        chat_id = message.get("chat", {}).get("id")
+                        text = message.get("text", "")
+                        
+                        if text == "/start" and chat_id:
+                            subscribed_users.add(chat_id)
+                            send_telegram_message(chat_id, "🤖 **Nexus SMC AI Active 24/7!**\n\nბოტი დაიწყებს ავტომატურ სკანირებას (BTC/USDT).")
+        except Exception as e:
+            logging.error(f"Polling error: {e}")
+        time.sleep(2)
+
+def scan_loop(subscribed_users):
+    while True:
+        try:
+            if subscribed_users:
+                res = analyze_symbol("BTCUSDT", "BTC/USDT")
+                if res and res["score"] >= 80:
+                    factors_text = "\n".join(res["factors"])
+                    msg = f"🤖 **NEXUS SMC AI SIGNAL**\n\n🔹 `{res['symbol']}` ({res['direction']})\n🎯 **Score:** `{res['score']}%`\n\n{factors_text}\n\n💰 **Entry:** `${res['price']}`\n🛑 **SL:** `${res['sl']}`\n🎯 **TP1:** `${res['tp1']}`"
+                    for u_id in list(subscribed_users):
+                        send_telegram_message(u_id, msg)
+        except Exception as e:
+            logging.error(f"Scan loop error: {e}")
+        time.sleep(60)
 
 if __name__ == "__main__":
     Thread(target=run_web_server, daemon=True).start()
-    asyncio.run(main_async())
+    
+    subscribed_users = set()
+    
+    Thread(target=scan_loop, args=(subscribed_users,), daemon=True).start()
+    
+    logging.info("🚀 Nexus SMC AI Engine Started...")
+    poll_telegram_updates(subscribed_users)
