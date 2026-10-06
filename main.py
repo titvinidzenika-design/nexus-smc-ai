@@ -2,33 +2,37 @@ import os
 import asyncio
 import logging
 import requests
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from threading import Thread
-from flask import Flask
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 logging.basicConfig(level=logging.INFO)
 
-app_web = Flask(__name__)
+# მარტივი Web სერვერი Render-ის Health Check-ისთვის
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"Nexus SMC AI Engine is Running 24/7!")
 
-@app_web.route('/')
-def home():
-    return "Nexus SMC AI Engine is Running 24/7!"
+    def log_message(self, format, *args):
+        return  # ლოგების გასასუფთავებლად
 
-def run_web():
+def run_web_server():
     port = int(os.environ.get("PORT", 8080))
-    app_web.run(host='0.0.0.0', port=port)
+    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+    server.serve_forever()
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
-
 SUBSCRIBED_USERS = set()
 
 def fetch_binance_ohlcv(symbol="BTCUSDT", interval="15m", limit=30):
     url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
     try:
         response = requests.get(url, timeout=10)
-        data = response.json()
-        return data
+        return response.json()
     except Exception as e:
         logging.error(f"Error fetching data: {e}")
         return None
@@ -92,22 +96,21 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🤖 **Nexus SMC AI Active 24/7!**\n\nბოტი დაიწყებს ავტომატურ სკანირებას (BTC/USDT).", parse_mode="Markdown")
 
 def main():
-    Thread(target=run_web, daemon=True).start()
+    # Web სერვერის გაშვება ცალკე Thread-ში
+    Thread(target=run_web_server, daemon=True).start()
     
-    if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN == "YOUR_TELEGRAM_BOT_TOKEN":
-        logging.error("❌ CRITICAL ERROR: TELEGRAM_BOT_TOKEN is missing or invalid in Render Environment Variables!")
+    if not TELEGRAM_BOT_TOKEN:
+        logging.error("❌ CRITICAL ERROR: TELEGRAM_BOT_TOKEN is missing!")
         return
 
-    try:
-        app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-        app.add_handler(CommandHandler("start", start))
-        if app.job_queue:
-            app.job_queue.run_repeating(auto_scan_loop, interval=60, first=5)
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    application.add_handler(CommandHandler("start", start))
+    
+    if application.job_queue:
+        application.job_queue.run_repeating(auto_scan_loop, interval=60, first=5)
 
-        print("🚀 Nexus SMC AI Started...")
-        app.run_polling()
-    except Exception as e:
-        logging.error(f"❌ Failed to start Telegram Bot: {e}")
+    logging.info("🚀 Nexus SMC AI Bot is running...")
+    application.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
