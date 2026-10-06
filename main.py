@@ -7,6 +7,7 @@ from threading import Thread
 
 logging.basicConfig(level=logging.INFO)
 
+# Web Server Render-ის პორტისთვის
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -38,6 +39,34 @@ def send_telegram_message(chat_id, text):
     except Exception as e:
         logging.error(f"Error sending telegram msg: {e}")
 
+# ----- გლობალური სიახლეების მიღების ფუნქცია -----
+def fetch_latest_crypto_news():
+    url = "https://cryptopanic.com/api/v1/posts/?auth_token=free&currencies=BTC&filter=important"
+    try:
+        res = requests.get(url, timeout=10)
+        if res.status_code == 200:
+            data = res.json()
+            results = data.get("results", [])
+            if results:
+                latest = results[0]
+                title = latest.get("title", "No title")
+                votes = latest.get("votes", {})
+                bullish = votes.get("positive", 0)
+                bearish = votes.get("negative", 0)
+                
+                sentiment = "⚪ ᲜᲔᲘᲢᲠᲐᲚᲣᲠᲘ"
+                if bullish > bearish:
+                    sentiment = "🟢 ᲑᲣᲚᲘᲨᲘ (Positive)"
+                elif bearish > bullish:
+                    sentiment = "🔴 ᲑᲔᲐᲠᲘᲨᲘ (Negative)"
+
+                return f"📰 **Global Market News:**\n_{title}_\n💡 **Market Sentiment:** {sentiment}"
+    except Exception as e:
+        logging.error(f"Error fetching news: {e}")
+    
+    return "📰 **Global Market News:** სიახლეები სტაბილურია (კრიტიკული ნიუსი არ ფიქსირდება)."
+
+# ----- Binance მონაცემების მიღება -----
 def fetch_binance_ohlcv(symbol="BTCUSDT", interval="15m", limit=30):
     url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
     try:
@@ -47,6 +76,7 @@ def fetch_binance_ohlcv(symbol="BTCUSDT", interval="15m", limit=30):
         logging.error(f"Error fetching binance data: {e}")
         return None
 
+# ----- SMC ტექნიკური ანალიზი -----
 def analyze_symbol(symbol_raw="BTCUSDT", symbol_display="BTC/USDT"):
     candles = fetch_binance_ohlcv(symbol=symbol_raw, interval="15m", limit=30)
     if not candles or len(candles) < 15:
@@ -86,6 +116,7 @@ def analyze_symbol(symbol_raw="BTCUSDT", symbol_display="BTC/USDT"):
         "factors": factors
     }
 
+# ----- Telegram-ის შეტყობინებების მიღება -----
 def poll_telegram_updates(subscribed_users):
     offset = 0
     while True:
@@ -102,28 +133,31 @@ def poll_telegram_updates(subscribed_users):
                         
                         if text == "/start" and chat_id:
                             subscribed_users.add(chat_id)
-                            send_telegram_message(chat_id, "🤖 **Nexus SMC AI Active 24/7!**\n\nბოტი დაიწყებს ავტომატურ სკანირებას ყოველ 15 წუთში (BTC/USDT).\n\n🔍 **ახლავე ვასკანირებ ბაზარს...**")
+                            send_telegram_message(chat_id, "🤖 **Nexus SMC AI Active 24/7!**\n\nბოტი აანალიზებს SMC ტექნიკურ მონაცემებს + გლობალურ სიახლეებს ყოველ 15 წუთში.\n\n🔍 **ვასკანირებ ბაზარს...**")
                             
-                            # სტარტისთანავე ეგრევე ამოწმებს ბაზარს:
                             res = analyze_symbol("BTCUSDT", "BTC/USDT")
+                            news_info = fetch_latest_crypto_news()
+                            
                             if res and res["score"] >= 80:
                                 factors_text = "\n".join(res["factors"])
-                                msg = f"🤖 **NEXUS SMC AI SIGNAL**\n\n🔹 `{res['symbol']}` ({res['direction']})\n🎯 **Score:** `{res['score']}%`\n\n{factors_text}\n\n💰 **Entry:** `${res['price']}`\n🛑 **SL:** `${res['sl']}`\n🎯 **TP1:** `${res['tp1']}`"
+                                msg = f"🤖 **NEXUS SMC AI SIGNAL**\n\n🔹 `{res['symbol']}` ({res['direction']})\n🎯 **Score:** `{res['score']}%`\n\n{factors_text}\n\n💰 **Entry:** `${res['price']}`\n🛑 **SL:** `${res['sl']}`\n🎯 **TP1:** `${res['tp1']}`\n\n🌐 {news_info}"
                                 send_telegram_message(chat_id, msg)
                             else:
-                                send_telegram_message(chat_id, f"ℹ️ ამ ეტაპზე მაღალი ალბათობის სიგნალი (80%+) არ არის (ამჟამინდელი Score: `{res['score'] if res else 0}%`). ბოტი შეგატყობინებთ, როგორც კი FVG/Trend ჩამოყალიბდება!")
+                                send_telegram_message(chat_id, f"ℹ️ ამ ეტაპზე ტექნიკური სიგნალი (80%+) არ არის (Score: `{res['score'] if res else 0}%`).\n\n🌐 {news_info}")
         except Exception as e:
             logging.error(f"Polling error: {e}")
         time.sleep(2)
 
+# ----- ავტომატური სკანირების ციკლი (15 წუთში ერთხელ) -----
 def scan_loop(subscribed_users):
     while True:
         try:
             if subscribed_users:
                 res = analyze_symbol("BTCUSDT", "BTC/USDT")
                 if res and res["score"] >= 80:
+                    news_info = fetch_latest_crypto_news()
                     factors_text = "\n".join(res["factors"])
-                    msg = f"🤖 **NEXUS SMC AI SIGNAL**\n\n🔹 `{res['symbol']}` ({res['direction']})\n🎯 **Score:** `{res['score']}%`\n\n{factors_text}\n\n💰 **Entry:** `${res['price']}`\n🛑 **SL:** `${res['sl']}`\n🎯 **TP1:** `${res['tp1']}`"
+                    msg = f"🤖 **NEXUS SMC AI SIGNAL**\n\n🔹 `{res['symbol']}` ({res['direction']})\n🎯 **Score:** `{res['score']}%`\n\n{factors_text}\n\n💰 **Entry:** `${res['price']}`\n🛑 **SL:** `${res['sl']}`\n🎯 **TP1:** `${res['tp1']}`\n\n🌐 {news_info}"
                     for u_id in list(subscribed_users):
                         send_telegram_message(u_id, msg)
         except Exception as e:
@@ -139,4 +173,3 @@ if __name__ == "__main__":
     
     logging.info("🚀 Nexus SMC AI Engine Started...")
     poll_telegram_updates(subscribed_users)
-
