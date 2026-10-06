@@ -9,7 +9,6 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 
 logging.basicConfig(level=logging.INFO)
 
-# Dummy Web Server for Render Free Tier
 app_web = Flask(__name__)
 
 @app_web.route('/')
@@ -20,7 +19,7 @@ def run_web():
     port = int(os.environ.get("PORT", 8080))
     app_web.run(host='0.0.0.0', port=port)
 
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 
 SUBSCRIBED_USERS = set()
 
@@ -48,7 +47,6 @@ def analyze_symbol(symbol_raw="BTCUSDT", symbol_display="BTC/USDT"):
     direction = "LONG"
     factors = []
 
-    # Simple SMC/Structure Check
     if current_price > sum(closes[-5:]) / 5:
         score += 20
         factors.append("📈 **HTF Trend:** Bullish Momentum (+20%)")
@@ -57,7 +55,6 @@ def analyze_symbol(symbol_raw="BTCUSDT", symbol_display="BTC/USDT"):
         score += 20
         factors.append("📉 **HTF Trend:** Bearish Momentum (+20%)")
 
-    # FVG Check
     if lows[-1] > highs[-3]:
         score += 20
         factors.append("⚡ **SMC Imbalance:** Bullish FVG Detected (+20%)")
@@ -96,13 +93,23 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     Thread(target=run_web, daemon=True).start()
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.job_queue.run_repeating(auto_scan_loop, interval=60, first=5)
+    
+    if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN == "YOUR_TELEGRAM_BOT_TOKEN":
+        logging.error("❌ CRITICAL ERROR: TELEGRAM_BOT_TOKEN is missing or invalid in Render Environment Variables!")
+        return
 
-    print("🚀 Nexus SMC AI Started...")
-    app.run_polling()
+    try:
+        app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+        app.add_handler(CommandHandler("start", start))
+        if app.job_queue:
+            app.job_queue.run_repeating(auto_scan_loop, interval=60, first=5)
+
+        print("🚀 Nexus SMC AI Started...")
+        app.run_polling()
+    except Exception as e:
+        logging.error(f"❌ Failed to start Telegram Bot: {e}")
 
 if __name__ == "__main__":
     main()
+
 
