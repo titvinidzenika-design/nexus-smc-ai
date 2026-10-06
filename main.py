@@ -1,3 +1,4 @@
+
 import os
 import asyncio
 import logging
@@ -9,7 +10,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 
 logging.basicConfig(level=logging.INFO)
 
-# მარტივი Web სერვერი Render-ის Health Check-ისთვის
+# Web სერვერი Render-ის Port Check-ისთვის
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -18,7 +19,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"Nexus SMC AI Engine is Running 24/7!")
 
     def log_message(self, format, *args):
-        return  # ლოგების გასასუფთავებლად
+        return
 
 def run_web_server():
     port = int(os.environ.get("PORT", 8080))
@@ -95,10 +96,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     SUBSCRIBED_USERS.add(update.effective_chat.id)
     await update.message.reply_text("🤖 **Nexus SMC AI Active 24/7!**\n\nბოტი დაიწყებს ავტომატურ სკანირებას (BTC/USDT).", parse_mode="Markdown")
 
-def main():
-    # Web სერვერის გაშვება ცალკე Thread-ში
-    Thread(target=run_web_server, daemon=True).start()
-    
+async def main_async():
     if not TELEGRAM_BOT_TOKEN:
         logging.error("❌ CRITICAL ERROR: TELEGRAM_BOT_TOKEN is missing!")
         return
@@ -109,10 +107,16 @@ def main():
     if application.job_queue:
         application.job_queue.run_repeating(auto_scan_loop, interval=60, first=5)
 
-    logging.info("🚀 Nexus SMC AI Bot is running...")
-    application.run_polling(drop_pending_updates=True)
+    logging.info("🚀 Nexus SMC AI Bot is starting...")
+    
+    await application.initialize()
+    await application.start()
+    await application.updater.start_polling(drop_pending_updates=True)
+    
+    # ამუშავებს ბოტს მუდმივ რეჟიმში
+    while True:
+        await asyncio.sleep(3600)
 
 if __name__ == "__main__":
-    main()
-
-
+    Thread(target=run_web_server, daemon=True).start()
+    asyncio.run(main_async())
