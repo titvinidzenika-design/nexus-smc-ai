@@ -7,7 +7,6 @@ from threading import Thread
 
 logging.basicConfig(level=logging.INFO)
 
-# Web Server Render-ის პორტისთვის
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -103,7 +102,16 @@ def poll_telegram_updates(subscribed_users):
                         
                         if text == "/start" and chat_id:
                             subscribed_users.add(chat_id)
-                            send_telegram_message(chat_id, "🤖 **Nexus SMC AI Active 24/7!**\n\nბოტი დაიწყებს ავტომატურ სკანირებას ყოველ 15 წუთში ერთხელ (BTC/USDT).")
+                            send_telegram_message(chat_id, "🤖 **Nexus SMC AI Active 24/7!**\n\nბოტი დაიწყებს ავტომატურ სკანირებას ყოველ 15 წუთში (BTC/USDT).\n\n🔍 **ახლავე ვასკანირებ ბაზარს...**")
+                            
+                            # სტარტისთანავე ეგრევე ამოწმებს ბაზარს:
+                            res = analyze_symbol("BTCUSDT", "BTC/USDT")
+                            if res and res["score"] >= 80:
+                                factors_text = "\n".join(res["factors"])
+                                msg = f"🤖 **NEXUS SMC AI SIGNAL**\n\n🔹 `{res['symbol']}` ({res['direction']})\n🎯 **Score:** `{res['score']}%`\n\n{factors_text}\n\n💰 **Entry:** `${res['price']}`\n🛑 **SL:** `${res['sl']}`\n🎯 **TP1:** `${res['tp1']}`"
+                                send_telegram_message(chat_id, msg)
+                            else:
+                                send_telegram_message(chat_id, f"ℹ️ ამ ეტაპზე მაღალი ალბათობის სიგნალი (80%+) არ არის (ამჟამინდელი Score: `{res['score'] if res else 0}%`). ბოტი შეგატყობინებთ, როგორც კი FVG/Trend ჩამოყალიბდება!")
         except Exception as e:
             logging.error(f"Polling error: {e}")
         time.sleep(2)
@@ -120,7 +128,6 @@ def scan_loop(subscribed_users):
                         send_telegram_message(u_id, msg)
         except Exception as e:
             logging.error(f"Scan loop error: {e}")
-        # 900 წამი = 15 წუთი (შემდეგ შემოწმებამდე)
         time.sleep(900)
 
 if __name__ == "__main__":
