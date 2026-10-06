@@ -12,7 +12,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/plain")
         self.end_headers()
-        self.wfile.write(b"Nexus SMC AI Engine is Live!")
+        self.wfile.write(b"Nexus Multi-TF SMC Engine is Live!")
 
     def log_message(self, format, *args):
         return
@@ -38,7 +38,7 @@ def send_telegram_message(chat_id, text):
     except Exception as e:
         logging.error(f"Error sending telegram msg: {e}")
 
-# ----- CryptoPanic News -----
+# ----- Global News -----
 def fetch_latest_crypto_news():
     url = "https://cryptopanic.com/api/v1/posts/?auth_token=free&currencies=BTC&filter=important"
     try:
@@ -61,24 +61,22 @@ def fetch_latest_crypto_news():
                 return f"📰 **Global News:** _{title}_\n💡 **Sentiment:** {sentiment}"
     except Exception as e:
         logging.error(f"News error: {e}")
-    return "📰 **Global News:** სტაბილური სიტუაციაა."
+    return "📰 **Global News:** ბაზარზე სტაბილური სიტუაციაა."
 
-# ----- Binance Data -----
+# ----- Binance Data Multi-TF -----
 def fetch_binance_ohlcv(symbol="BTCUSDT", interval="15m", limit=100):
     url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
     try:
         res = requests.get(url, timeout=10)
         return res.json()
     except Exception as e:
-        logging.error(f"Binance error: {e}")
+        logging.error(f"Binance fetch error: {e}")
         return None
 
-# ----- RSI Calculation -----
 def calculate_rsi(closes, period=14):
     if len(closes) < period + 1:
         return 50
-    gains = []
-    losses = []
+    gains, losses = [], []
     for i in range(1, len(closes)):
         diff = closes[i] - closes[i - 1]
         if diff >= 0:
@@ -90,67 +88,77 @@ def calculate_rsi(closes, period=14):
     
     avg_gain = sum(gains[-period:]) / period
     avg_loss = sum(losses[-period:]) / period
-    
     if avg_loss == 0:
         return 100
     rs = avg_gain / avg_loss
     return round(100 - (100 / (1 + rs)), 2)
 
-# ----- Advanced SMC + Technical Analysis -----
-def analyze_symbol(symbol_raw="BTCUSDT", symbol_display="BTC/USDT"):
-    candles = fetch_binance_ohlcv(symbol=symbol_raw, interval="15m", limit=100)
-    if not candles or len(candles) < 50:
+# ----- Multi-Timeframe Institutional SMC Analysis -----
+def analyze_multi_timeframe(symbol_raw="BTCUSDT", symbol_display="BTC/USDT"):
+    candles_1h = fetch_binance_ohlcv(symbol=symbol_raw, interval="1h", limit=50)
+    candles_15m = fetch_binance_ohlcv(symbol=symbol_raw, interval="15m", limit=60)
+
+    if not candles_1h or not candles_15m:
         return None
 
-    closes = [float(c[4]) for c in candles]
-    highs = [float(c[2]) for c in candles]
-    lows = [float(c[3]) for c in candles]
-    volumes = [float(c[5]) for c in candles]
+    # 1H HTF Trend Check
+    closes_1h = [float(c[4]) for c in candles_1h]
+    ema_200_1h = sum(closes_1h[-50:]) / 50
+    current_price = closes_15m[-1][4] = float(candles_15m[-1][4])
 
-    current_price = closes[-1]
-    score = 40
-    direction = "LONG"
+    htf_trend = "BULLISH" if current_price > ema_200_1h else "BEARISH"
+
+    # 15M LTF Execution & Liquidity Analysis
+    closes_15m = [float(c[4]) for c in candles_15m]
+    highs_15m = [float(c[2]) for c in candles_15m]
+    lows_15m = [float(c[3]) for c in candles_15m]
+    volumes_15m = [float(c[5]) for c in candles_15m]
+
+    score = 30
     factors = []
+    direction = htf_trend
 
-    # 1. EMA Trend Check (50-period average)
-    ema_50 = sum(closes[-50:]) / 50
-    if current_price > ema_50:
-        score += 20
-        factors.append("📈 **HTF Trend:** Bullish Above EMA (+20%)")
+    # HTF Trend Alignment
+    if htf_trend == "BULLISH":
+        score += 25
+        factors.append("🌐 **1H HTF Trend:** Bullish Structure (+25%)")
     else:
-        direction = "SHORT"
+        score += 25
+        factors.append("🌐 **1H HTF Trend:** Bearish Structure (+25%)")
+
+    # Liquidity Sweep Check (წინა დაბალი/მაღალი წერტილის მოხსნა)
+    prev_low = min(lows_15m[-15:-3])
+    prev_high = max(highs_15m[-15:-3])
+
+    if htf_trend == "BULLISH" and lows_15m[-1] < prev_low and closes_15m[-1] > prev_low:
+        score += 25
+        factors.append("🎯 **Liquidity Sweep:** Bullish Liquidity Grab (+25%)")
+    elif htf_trend == "BEARISH" and highs_15m[-1] > prev_high and closes_15m[-1] < prev_high:
+        score += 25
+        factors.append("🎯 **Liquidity Sweep:** Bearish Liquidity Grab (+25%)")
+
+    # FVG / Imbalance Confirmation
+    if htf_trend == "BULLISH" and lows_15m[-1] > highs_15m[-3]:
         score += 20
-        factors.append("📉 **HTF Trend:** Bearish Below EMA (+20%)")
-
-    # 2. SMC Imbalance / FVG
-    if direction == "LONG" and lows[-1] > highs[-3]:
+        factors.append("⚡ **15M FVG:** Bullish Fair Value Gap (+20%)")
+    elif htf_trend == "BEARISH" and highs_15m[-1] < lows_15m[-3]:
         score += 20
-        factors.append("⚡ **SMC Imbalance:** Bullish FVG (+20%)")
-    elif direction == "SHORT" and highs[-1] < lows[-3]:
-        score += 20
-        factors.append("⚡ **SMC Imbalance:** Bearish FVG (+20%)")
+        factors.append("⚡ **15M FVG:** Bearish Fair Value Gap (+20%)")
 
-    # 3. RSI Confirmation
-    rsi = calculate_rsi(closes)
-    if direction == "LONG" and rsi < 65:
+    # RSI & Volume Spike
+    rsi = calculate_rsi(closes_15m)
+    avg_vol = sum(volumes_15m[-10:-1]) / 9
+    if volumes_15m[-1] > avg_vol * 1.2:
         score += 10
-        factors.append(f"📊 **RSI Check:** Healthy Momentum ({rsi}) (+10%)")
-    elif direction == "SHORT" and rsi > 35:
-        score += 10
-        factors.append(f"📊 **RSI Check:** Healthy Momentum ({rsi}) (+10%)")
+        factors.append("🔥 **Volume:** Institutional Volume Spike (+10%)")
 
-    # 4. Volume Spike
-    avg_vol = sum(volumes[-10:-1]) / 9
-    if volumes[-1] > avg_vol * 1.3:
-        score += 10
-        factors.append("🔥 **Volume Spike:** Strong Participation (+10%)")
-
-    sl = round(min(lows[-5:]) * 0.999, 2) if direction == "LONG" else round(max(highs[-5:]) * 1.001, 2)
-    tp1 = round(current_price + (current_price - sl) * 1.5, 2) if direction == "LONG" else round(current_price - (sl - current_price) * 1.5, 2)
+    sl = round(min(lows_15m[-5:]) * 0.998, 2) if direction == "BULLISH" else round(max(highs_15m[-5:]) * 1.002, 2)
+    tp1 = round(current_price + (current_price - sl) * 2.0, 2) if direction == "BULLISH" else round(current_price - (sl - current_price) * 2.0, 2)
 
     return {
         "symbol": symbol_display,
-        "direction": direction,
+        "direction": "LONG" if direction == "BULLISH" else "SHORT",
+        "htf_trend": htf_trend,
         "score": score,
         "price": current_price,
         "sl": sl,
@@ -176,17 +184,17 @@ def poll_telegram_updates(subscribed_users):
                         
                         if text == "/start" and chat_id:
                             subscribed_users.add(chat_id)
-                            send_telegram_message(chat_id, "🤖 **Nexus Advanced SMC AI Active!**\n\nანალიზდება: SMC + FVG + RSI + Volume + Global News.\n\n🔍 **ვასკანირებ ბაზარს...**")
+                            send_telegram_message(chat_id, "🤖 **Nexus Multi-TF SMC Engine Active!**\n\nანალიზდება: 1H HTF Trend + 15M Liquidity Sweep + FVG + Volume.\n\n🔍 **ვასკანირებ ბაზარს...**")
                             
-                            res = analyze_symbol("BTCUSDT", "BTC/USDT")
+                            res = analyze_multi_timeframe("BTCUSDT", "BTC/USDT")
                             news_info = fetch_latest_crypto_news()
                             
                             if res and res["score"] >= 80:
                                 factors_text = "\n".join(res["factors"])
-                                msg = f"🤖 **NEXUS ADVANCED SIGNAL**\n\n🔹 `{res['symbol']}` ({res['direction']})\n🎯 **Score:** `{res['score']}%`\n\n{factors_text}\n\n💰 **Entry:** `${res['price']}`\n🛑 **SL:** `${res['sl']}`\n🎯 **TP1:** `${res['tp1']}`\n\n🌐 {news_info}"
+                                msg = f"🤖 **NEXUS MULTI-TF SMC SIGNAL**\n\n🔹 `{res['symbol']}` ({res['direction']})\n🌐 **1H Trend:** `{res['htf_trend']}`\n🎯 **Score:** `{res['score']}%`\n\n{factors_text}\n\n💰 **Entry:** `${res['price']}`\n🛑 **SL:** `${res['sl']}`\n🎯 **TP1 (1:2 R:R):** `${res['tp1']}`\n\n🌐 {news_info}"
                                 send_telegram_message(chat_id, msg)
                             else:
-                                send_telegram_message(chat_id, f"ℹ️ ამ ეტაპზე მაღალი სიზუსტის სიგნალი (80%+) არ არის (Score: `{res['score'] if res else 0}%`, RSI: `{res['rsi'] if res else 'N/A'}`).\n\n🌐 {news_info}")
+                                send_telegram_message(chat_id, f"ℹ️ ამ ეტაპზე 1H/15M სინქრონული სიგნალი (80%+) არ არის (Score: `{res['score'] if res else 0}%`, 1H Trend: `{res['htf_trend'] if res else 'N/A'}`).\n\n🌐 {news_info}")
         except Exception as e:
             logging.error(f"Polling error: {e}")
         time.sleep(2)
@@ -197,14 +205,13 @@ def scan_loop(subscribed_users):
     while True:
         try:
             if subscribed_users:
-                res = analyze_symbol("BTCUSDT", "BTC/USDT")
+                res = analyze_multi_timeframe("BTCUSDT", "BTC/USDT")
                 if res and res["score"] >= 80:
-                    # დუბლირების თავიდან აცილება
-                    if abs(res["price"] - last_signal_price) > 50:
+                    if abs(res["price"] - last_signal_price) > 80:
                         last_signal_price = res["price"]
                         news_info = fetch_latest_crypto_news()
                         factors_text = "\n".join(res["factors"])
-                        msg = f"🤖 **NEXUS ADVANCED SIGNAL**\n\n🔹 `{res['symbol']}` ({res['direction']})\n🎯 **Score:** `{res['score']}%`\n\n{factors_text}\n\n💰 **Entry:** `${res['price']}`\n🛑 **SL:** `${res['sl']}`\n🎯 **TP1:** `${res['tp1']}`\n\n🌐 {news_info}"
+                        msg = f"🤖 **NEXUS MULTI-TF SMC SIGNAL**\n\n🔹 `{res['symbol']}` ({res['direction']})\n🌐 **1H Trend:** `{res['htf_trend']}`\n🎯 **Score:** `{res['score']}%`\n\n{factors_text}\n\n💰 **Entry:** `${res['price']}`\n🛑 **SL:** `${res['sl']}`\n🎯 **TP1 (1:2 R:R):** `${res['tp1']}`\n\n🌐 {news_info}"
                         for u_id in list(subscribed_users):
                             send_telegram_message(u_id, msg)
         except Exception as e:
@@ -215,5 +222,5 @@ if __name__ == "__main__":
     Thread(target=run_web_server, daemon=True).start()
     subscribed_users = set()
     Thread(target=scan_loop, args=(subscribed_users,), daemon=True).start()
-    logging.info("🚀 Nexus Advanced SMC Engine Started...")
+    logging.info("🚀 Nexus Multi-TF SMC Engine Started...")
     poll_telegram_updates(subscribed_users)
