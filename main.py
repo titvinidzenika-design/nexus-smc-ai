@@ -22,6 +22,18 @@ def run_web_server():
     server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
     server.serve_forever()
 
+# სერვერის "გაღვიძების" ავტომატური ფუნქცია (Anti-Sleep)
+def keep_alive():
+    render_url = os.environ.get("RENDER_EXTERNAL_URL", "")
+    while True:
+        time.sleep(600)  # ყოველ 10 წუთში
+        if render_url:
+            try:
+                requests.get(render_url, timeout=10)
+                logging.info("Keep-alive ping sent successfully.")
+            except Exception as e:
+                logging.error(f"Keep-alive error: {e}")
+
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 
 def send_telegram_message(chat_id, text):
@@ -101,14 +113,12 @@ def analyze_multi_timeframe(symbol_raw="BTCUSDT", symbol_display="BTC/USDT"):
     if not candles_1h or not candles_15m:
         return None
 
-    # 1H HTF Trend Check
     closes_1h = [float(c[4]) for c in candles_1h]
     ema_200_1h = sum(closes_1h[-50:]) / 50
-    current_price = closes_15m[-1][4] = float(candles_15m[-1][4])
+    current_price = float(candles_15m[-1][4])
 
     htf_trend = "BULLISH" if current_price > ema_200_1h else "BEARISH"
 
-    # 15M LTF Execution & Liquidity Analysis
     closes_15m = [float(c[4]) for c in candles_15m]
     highs_15m = [float(c[2]) for c in candles_15m]
     lows_15m = [float(c[3]) for c in candles_15m]
@@ -118,7 +128,6 @@ def analyze_multi_timeframe(symbol_raw="BTCUSDT", symbol_display="BTC/USDT"):
     factors = []
     direction = htf_trend
 
-    # HTF Trend Alignment
     if htf_trend == "BULLISH":
         score += 25
         factors.append("🌐 **1H HTF Trend:** Bullish Structure (+25%)")
@@ -126,7 +135,6 @@ def analyze_multi_timeframe(symbol_raw="BTCUSDT", symbol_display="BTC/USDT"):
         score += 25
         factors.append("🌐 **1H HTF Trend:** Bearish Structure (+25%)")
 
-    # Liquidity Sweep Check (წინა დაბალი/მაღალი წერტილის მოხსნა)
     prev_low = min(lows_15m[-15:-3])
     prev_high = max(highs_15m[-15:-3])
 
@@ -137,7 +145,6 @@ def analyze_multi_timeframe(symbol_raw="BTCUSDT", symbol_display="BTC/USDT"):
         score += 25
         factors.append("🎯 **Liquidity Sweep:** Bearish Liquidity Grab (+25%)")
 
-    # FVG / Imbalance Confirmation
     if htf_trend == "BULLISH" and lows_15m[-1] > highs_15m[-3]:
         score += 20
         factors.append("⚡ **15M FVG:** Bullish Fair Value Gap (+20%)")
@@ -145,7 +152,6 @@ def analyze_multi_timeframe(symbol_raw="BTCUSDT", symbol_display="BTC/USDT"):
         score += 20
         factors.append("⚡ **15M FVG:** Bearish Fair Value Gap (+20%)")
 
-    # RSI & Volume Spike
     rsi = calculate_rsi(closes_15m)
     avg_vol = sum(volumes_15m[-10:-1]) / 9
     if volumes_15m[-1] > avg_vol * 1.2:
@@ -197,7 +203,8 @@ def poll_telegram_updates(subscribed_users):
                                 send_telegram_message(chat_id, f"ℹ️ ამ ეტაპზე 1H/15M სინქრონული სიგნალი (80%+) არ არის (Score: `{res['score'] if res else 0}%`, 1H Trend: `{res['htf_trend'] if res else 'N/A'}`).\n\n🌐 {news_info}")
         except Exception as e:
             logging.error(f"Polling error: {e}")
-        time.sleep(2)
+            time.sleep(5)
+        time.sleep(1)
 
 # ----- 15 Min Loop -----
 def scan_loop(subscribed_users):
@@ -220,6 +227,7 @@ def scan_loop(subscribed_users):
 
 if __name__ == "__main__":
     Thread(target=run_web_server, daemon=True).start()
+    Thread(target=keep_alive, daemon=True).start()
     subscribed_users = set()
     Thread(target=scan_loop, args=(subscribed_users,), daemon=True).start()
     logging.info("🚀 Nexus Multi-TF SMC Engine Started...")
