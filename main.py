@@ -3,12 +3,12 @@ import time
 import json
 import logging
 import requests
+from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from threading import Thread
 
 logging.basicConfig(level=logging.INFO)
 
-# 1. USERS PERSISTENCE (მომხმარებლების ფაილში შენახვა)
 USER_FILE = "users.json"
 
 def load_users():
@@ -32,7 +32,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/plain")
         self.end_headers()
-        self.wfile.write(b"Nexus Ultra-Precision SMC Engine is Live!")
+        self.wfile.write(b"Nexus Institutional SMC Engine is Live!")
 
     def log_message(self, format, *args):
         return
@@ -64,7 +64,6 @@ def send_telegram_message(chat_id, text):
     except Exception as e:
         logging.error(f"Error sending msg: {e}")
 
-# ----- News Fetcher -----
 def fetch_latest_crypto_news():
     url = "https://cryptopanic.com/api/v1/posts/?auth_token=free&currencies=BTC&filter=important"
     try:
@@ -86,7 +85,6 @@ def fetch_latest_crypto_news():
         logging.error(f"News error: {e}")
     return "📰 **Global News:** ბაზარზე სტაბილური სიტუაციაა."
 
-# ----- Technical Calculations -----
 def fetch_binance_ohlcv(symbol="BTCUSDT", interval="15m", limit=100):
     url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
     try:
@@ -108,7 +106,7 @@ def calculate_atr(candles, period=14):
         tr_list.append(tr)
     return sum(tr_list[-period:]) / period
 
-# ----- Precision SMC Engine -----
+# ----- ADVANCED SMC INSTITUTIONAL ENGINE -----
 def analyze_multi_timeframe(symbol_raw="BTCUSDT", symbol_display="BTC/USDT"):
     candles_1h = fetch_binance_ohlcv(symbol=symbol_raw, interval="1h", limit=60)
     candles_15m = fetch_binance_ohlcv(symbol=symbol_raw, interval="15m", limit=60)
@@ -117,6 +115,9 @@ def analyze_multi_timeframe(symbol_raw="BTCUSDT", symbol_display="BTC/USDT"):
         return None
 
     closes_1h = [float(c[4]) for c in candles_1h]
+    highs_1h = [float(c[2]) for c in candles_1h]
+    lows_1h = [float(c[3]) for c in candles_1h]
+    
     ema_200_1h = sum(closes_1h[-50:]) / 50
     current_price = float(candles_15m[-1][4])
 
@@ -127,47 +128,67 @@ def analyze_multi_timeframe(symbol_raw="BTCUSDT", symbol_display="BTC/USDT"):
     lows_15m = [float(c[3]) for c in candles_15m]
     volumes_15m = [float(c[5]) for c in candles_15m]
 
-    score = 30
+    score = 20
     factors = []
     direction = htf_trend
 
-    # HTF Trend
-    score += 25
-    factors.append(f"🌐 **1H HTF Trend:** {htf_trend.capitalize()} (+25%)")
+    # 1. Premium / Discount Zone Check
+    range_high_1h = max(highs_1h[-20:])
+    range_low_1h = min(lows_1h[-20:])
+    equilibrium = (range_high_1h + range_low_1h) / 2
 
-    # Liquidity Sweep Check
-    prev_low = min(lows_15m[-20:-3])
-    prev_high = max(highs_15m[-20:-3])
+    if htf_trend == "BULLISH" and current_price < equilibrium:
+        score += 20
+        factors.append("🟢 **Discount Zone:** Bought at Low Equilibrium (+20%)")
+    elif htf_trend == "BEARISH" and current_price > equilibrium:
+        score += 20
+        factors.append("🔴 **Premium Zone:** Sold at High Equilibrium (+20%)")
 
-    if htf_trend == "BULLISH" and lows_15m[-2] < prev_low and closes_15m[-1] > prev_low:
-        score += 25
-        factors.append("🎯 **Liquidity Sweep:** Bullish Liquidity Grab (+25%)")
-    elif htf_trend == "BEARISH" and highs_15m[-2] > prev_high and closes_15m[-1] < prev_high:
-        score += 25
-        factors.append("🎯 **Liquidity Sweep:** Bearish Liquidity Grab (+25%)")
+    # 2. Market Structure CHoCH / BOS Check
+    prev_structure_high = max(highs_15m[-15:-3])
+    prev_structure_low = min(lows_15m[-15:-3])
 
-    # Accurate 3-Candle FVG Check
+    if htf_trend == "BULLISH" and closes_15m[-1] > prev_structure_high:
+        score += 20
+        factors.append("🚀 **Structure Shift:** Bullish CHoCH/BOS Break (+20%)")
+    elif htf_trend == "BEARISH" and closes_15m[-1] < prev_structure_low:
+        score += 20
+        factors.append("📉 **Structure Shift:** Bearish CHoCH/BOS Break (+20%)")
+
+    # 3. Liquidity Sweep
+    if htf_trend == "BULLISH" and lows_15m[-2] < prev_structure_low and closes_15m[-1] > prev_structure_low:
+        score += 20
+        factors.append("🎯 **Liquidity Sweep:** Bullish Grab (+20%)")
+    elif htf_trend == "BEARISH" and highs_15m[-2] > prev_structure_high and closes_15m[-1] < prev_structure_high:
+        score += 20
+        factors.append("🎯 **Liquidity Sweep:** Bearish Grab (+20%)")
+
+    # 4. FVG / Imbalance
     if htf_trend == "BULLISH" and lows_15m[-1] > highs_15m[-3]:
-        score += 20
-        factors.append("⚡ **15M FVG:** Valid Bullish Imbalance (+20%)")
+        score += 10
+        factors.append("⚡ **15M FVG:** Valid Imbalance (+10%)")
     elif htf_trend == "BEARISH" and highs_15m[-1] < lows_15m[-3]:
-        score += 20
-        factors.append("⚡ **15M FVG:** Valid Bearish Imbalance (+20%)")
+        score += 10
+        factors.append("⚡ **15M FVG:** Valid Imbalance (+10%)")
 
-    # Volume Spike
+    # 5. Volume Spike
     avg_vol = sum(volumes_15m[-10:-1]) / 9
     if volumes_15m[-1] > avg_vol * 1.3:
         score += 10
         factors.append("🔥 **Volume:** Institutional Volume Spike (+10%)")
 
-    # ATR Dynamic Stop Loss Calculation
+    # ATR SL / TP1 / TP2
     atr = calculate_atr(candles_15m)
     if direction == "BULLISH":
         sl = round(current_price - (atr * 1.5), 2)
-        tp1 = round(current_price + ((current_price - sl) * 2.0), 2)
+        risk = current_price - sl
+        tp1 = round(current_price + (risk * 1.5), 2)
+        tp2 = round(current_price + (risk * 2.5), 2)
     else:
         sl = round(current_price + (atr * 1.5), 2)
-        tp1 = round(current_price - ((sl - current_price) * 2.0), 2)
+        risk = sl - current_price
+        tp1 = round(current_price - (risk * 1.5), 2)
+        tp2 = round(current_price - (risk * 2.5), 2)
 
     return {
         "symbol": symbol_display,
@@ -177,10 +198,10 @@ def analyze_multi_timeframe(symbol_raw="BTCUSDT", symbol_display="BTC/USDT"):
         "price": current_price,
         "sl": sl,
         "tp1": tp1,
+        "tp2": tp2,
         "factors": factors
     }
 
-# ----- Telegram Polling -----
 def poll_telegram_updates(subscribed_users):
     offset = 0
     while True:
@@ -200,23 +221,22 @@ def poll_telegram_updates(subscribed_users):
                                 subscribed_users.add(chat_id)
                                 save_users(subscribed_users)
                             
-                            send_telegram_message(chat_id, "🤖 **Nexus Ultra-Precision SMC Engine Active!**\n\nანალიზდება: ATR SL/TP + Multi-TF Trend + FVG + News.\n\n🔍 **ვასკანირებ ბაზარს...**")
+                            send_telegram_message(chat_id, "🤖 **Nexus Institutional SMC Engine Active!**\n\nანალიზდება: CHoCH/BOS + Discount/Premium + ATR + News.\n\n🔍 **ვასკანირებ ბაზარს...**")
                             
                             res = analyze_multi_timeframe("BTCUSDT", "BTC/USDT")
                             news_info = fetch_latest_crypto_news()
                             
                             if res and res["score"] >= 80:
                                 factors_text = "\n".join(res["factors"])
-                                msg = f"🤖 **NEXUS PRECISION SIGNAL**\n\n🔹 `{res['symbol']}` ({res['direction']})\n🌐 **1H Trend:** `{res['htf_trend']}`\n🎯 **Score:** `{res['score']}%`\n\n{factors_text}\n\n💰 **Entry:** `${res['price']}`\n🛑 **ATR SL:** `${res['sl']}`\n🎯 **TP1 (1:2 R:R):** `${res['tp1']}`\n\n🌐 {news_info}"
+                                msg = f"🤖 **NEXUS INSTITUTIONAL SIGNAL**\n\n🔹 `{res['symbol']}` ({res['direction']})\n🌐 **1H Trend:** `{res['htf_trend']}`\n🎯 **Score:** `{res['score']}%`\n\n{factors_text}\n\n💰 **Entry:** `${res['price']}`\n🛑 **ATR SL:** `${res['sl']}`\n🎯 **TP1:** `${res['tp1']}`\n🎯 **TP2:** `${res['tp2']}`\n\n💡 *TP1-ზე მიღწევისას სტოპი გადაიტანეთ Entry-ზე (BE)!*\n\n🌐 {news_info}"
                                 send_telegram_message(chat_id, msg)
                             else:
-                                send_telegram_message(chat_id, f"ℹ️ ამ ეტაპზე 80%+ სიგნალი არ არის (Score: `{res['score'] if res else 0}%`).\n\n🌐 {news_info}")
+                                send_telegram_message(chat_id, f"ℹ️ ამ ეტაპზე 80%+ სინქრონული სიგნალი არ არის (Score: `{res['score'] if res else 0}%`).\n\n🌐 {news_info}")
         except Exception as e:
             logging.error(f"Polling error: {e}")
             time.sleep(5)
         time.sleep(1)
 
-# ----- Scan Loop -----
 def scan_loop(subscribed_users):
     last_signal_price = 0
     while True:
@@ -228,7 +248,7 @@ def scan_loop(subscribed_users):
                         last_signal_price = res["price"]
                         news_info = fetch_latest_crypto_news()
                         factors_text = "\n".join(res["factors"])
-                        msg = f"🤖 **NEXUS PRECISION SIGNAL**\n\n🔹 `{res['symbol']}` ({res['direction']})\n🌐 **1H Trend:** `{res['htf_trend']}`\n🎯 **Score:** `{res['score']}%`\n\n{factors_text}\n\n💰 **Entry:** `${res['price']}`\n🛑 **ATR SL:** `${res['sl']}`\n🎯 **TP1 (1:2 R:R):** `${res['tp1']}`\n\n🌐 {news_info}"
+                        msg = f"🤖 **NEXUS INSTITUTIONAL SIGNAL**\n\n🔹 `{res['symbol']}` ({res['direction']})\n🌐 **1H Trend:** `{res['htf_trend']}`\n🎯 **Score:** `{res['score']}%`\n\n{factors_text}\n\n💰 **Entry:** `${res['price']}`\n🛑 **ATR SL:** `${res['sl']}`\n🎯 **TP1:** `${res['tp1']}`\n🎯 **TP2:** `${res['tp2']}`\n\n💡 *TP1-ზე მიღწევისას სტოპი გადაიტანეთ Entry-ზე (BE)!*\n\n🌐 {news_info}"
                         for u_id in list(subscribed_users):
                             send_telegram_message(u_id, msg)
         except Exception as e:
@@ -242,5 +262,5 @@ if __name__ == "__main__":
     subscribed_users = load_users()
     
     Thread(target=scan_loop, args=(subscribed_users,), daemon=True).start()
-    logging.info("🚀 Nexus Ultra-Precision Engine Started...")
+    logging.info("🚀 Nexus Institutional Engine Started...")
     poll_telegram_updates(subscribed_users)
