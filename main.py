@@ -2,7 +2,6 @@ import os
 import time
 import threading
 import requests
-import pandas as pd
 import ccxt
 from flask import Flask
 import telebot
