@@ -1,266 +1,203 @@
 import os
 import time
-import json
-import logging
+import threading
 import requests
-from datetime import datetime
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from threading import Thread
+import pandas as pd
+import ccxt
+from flask import Flask
+import telebot
 
-logging.basicConfig(level=logging.INFO)
+# --- Configuration & Environment Variables ---
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+PORT = int(os.getenv("PORT", "10000"))
 
-USER_FILE = "users.json"
+# Initialize Sync Telegram Bot
+bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN, parse_mode="HTML") if TELEGRAM_BOT_TOKEN else None
 
-def load_users():
-    if os.path.exists(USER_FILE):
-        try:
-            with open(USER_FILE, "r") as f:
-                return set(json.load(f))
-        except Exception as e:
-            logging.error(f"Error loading users: {e}")
-    return set()
+# Active Chat ID for hourly updates
+active_chat_id = None
 
-def save_users(users):
+# CCXT Exchange
+exchange = ccxt.binance({'enableRateLimit': True})
+
+def set_active_chat(chat_id):
+    global active_chat_id
+    active_chat_id = chat_id
+
+# --- Market Analysis Engine ---
+def analyze_market(symbol):
     try:
-        with open(USER_FILE, "w") as f:
-            json.dump(list(users), f)
+        ohlcv_5m = exchange.fetch_ohlcv(symbol, timeframe='5m', limit=100)
+        ohlcv_1h = exchange.fetch_ohlcv(symbol, timeframe='1h', limit=100)
+
+        df_5m = pd.DataFrame(ohlcv_5m, columns=['ts', 'open', 'high', 'low', 'close', 'volume'])
+        df_1h = pd.DataFrame(ohlcv_1h, columns=['ts', 'open', 'high', 'low', 'close', 'volume'])
+
+        # EMA 200
+        df_5m['ema200'] = df_5m['close'].ewm(span=200, adjust=False).mean()
+        df_1h['ema200'] = df_1h['close'].ewm(span=200, adjust=False).mean()
+
+        # RSI 14
+        delta = df_5m['close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+        rs = gain / loss
+        df_5m['rsi'] = 100 - (100 / (1 + rs))
+
+        # ATR 14
+        hl = df_5m['high'] - df_5m['low']
+        hc = (df_5m['high'] - df_5m['close'].shift()).abs()
+        lc = (df_5m['low'] - df_5m['close'].shift()).abs()
+        df_5m['atr'] = pd.concat([hl, hc, lc], axis=1).max(axis=1).rolling(14).mean()
+
+        # Volume SMA 20
+        df_5m['vol_sma20'] = df_5m['volume'].rolling(20).mean()
+
+        curr = df_5m.iloc[-1]
+        curr_1h = df_1h.iloc[-1]
+        c1 = df_5m.iloc[-2]
+
+        price = curr['close']
+        rsi = curr['rsi']
+        atr = curr['atr']
+        vol_spike = curr['volume'] > (curr['vol_sma20'] * 1.3)
+
+        # Candlestick Patterns
+        patterns = []
+        body0 = abs(curr['close'] - curr['open'])
+        range0 = curr['high'] - curr['low']
+        
+        if range0 > 0:
+            if body0 <= (range0 * 0.1):
+                patterns.append("Doji")
+            if c1['close'] < c1['open'] and curr['close'] > curr['open'] and curr['close'] >= c1['open']:
+                patterns.append("Bullish Engulfing")
+            elif c1['close'] > c1['open'] and curr['close'] < curr['open'] and curr['close'] <= c1['open']:
+                patterns.append("Bearish Engulfing")
+
+        # Signal Logic
+        signal = None
+        if price > curr['ema200'] and price > curr_1h['ema200'] and 48 < rsi < 68 and vol_spike:
+            signal = "BUY (LONG)"
+        elif price < curr['ema200'] and price < curr_1h['ema200'] and 32 < rsi < 52 and vol_spike:
+            signal = "SELL (SHORT)"
+
+        entry = price
+        sl = entry - (1.5 * atr) if signal == "BUY (LONG)" else (entry + (1.5 * atr) if signal == "SELL (SHORT)" else 0)
+        tp = entry + (3.0 * atr) if signal == "BUY (LONG)" else (entry - (3.0 * atr) if signal == "SELL (SHORT)" else 0)
+
+        return {
+            'symbol': symbol,
+            'price': price,
+            'rsi': rsi,
+            'vol_spike': vol_spike,
+            'patterns': ", ".join(patterns) if patterns else "არ არის",
+            'signal': signal,
+            'entry': entry,
+            'sl': sl,
+            'tp': tp
+        }
     except Exception as e:
-        logging.error(f"Error saving users: {e}")
+        print(f"Error analyzing {symbol}: {e}")
+        return None
 
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-type", "text/plain")
-        self.end_headers()
-        self.wfile.write(b"Nexus Institutional SMC Engine is Live!")
+# --- Telegram Command Handlers (Sync) ---
+if bot:
+    @bot.message_handler(commands=['start'])
+    def send_start(message):
+        set_active_chat(message.chat.id)
+        msg = (
+            "🚀 <b>Nexus Crypto Bot ჩართულია!</b>\n\n"
+            "🟢 ბოტი ავტომატურად გაგიფრთხილებთ სავაჭრო სიგნალების დროს.\n"
+            "⏱ <b>ყოველ 1 საათში მოგივათ ავტომატური განახლება ბაზრის მდგომარეობაზე!</b>\n\n"
+            "📜 <b>ბრძანებები:</b>\n"
+            "▶ /btc - BTC/USDT ტექნიკური ანალიზი\n"
+            "▶ /sol - SOL/USDT ტექნიკური ანალიზი\n"
+            "▶ /status - ბოტის სტატუსი"
+        )
+        bot.reply_to(message, msg)
 
-    def log_message(self, format, *args):
-        return
+    @bot.message_handler(commands=['btc'])
+    def send_btc(message):
+        set_active_chat(message.chat.id)
+        bot.reply_to(message, "⏳ ითვლება BTC/USDT...")
+        data = analyze_market("BTC/USDT")
+        if not data:
+            bot.send_message(message.chat.id, "❌ მონაცემების მიღების შეცდომა.")
+            return
+        
+        msg = f"📊 <b>BTC/USDT</b>\nფასი: ${data['price']:.2f}\nRSI: {data['rsi']:.1f}\nპატერნი: {data['patterns']}\nსიგნალი: {data['signal'] if data['signal'] else 'NEUTRAL'}"
+        if data['signal']:
+            msg += f"\n\n📥 Entry: ${data['entry']:.2f}\n🛑 SL: ${data['sl']:.2f}\n🎯 TP: ${data['tp']:.2f}"
+        bot.send_message(message.chat.id, msg)
 
-def run_web_server():
-    port = int(os.environ.get("PORT", 8080))
-    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
-    server.serve_forever()
+    @bot.message_handler(commands=['sol'])
+    def send_sol(message):
+        set_active_chat(message.chat.id)
+        bot.reply_to(message, "⏳ ითვლება SOL/USDT...")
+        data = analyze_market("SOL/USDT")
+        if not data:
+            bot.send_message(message.chat.id, "❌ მონაცემების მიღების შეცდომა.")
+            return
+        
+        msg = f"📊 <b>SOL/USDT</b>\nფასი: ${data['price']:.2f}\nRSI: {data['rsi']:.1f}\nპატერნი: {data['patterns']}\nსიგნალი: {data['signal'] if data['signal'] else 'NEUTRAL'}"
+        if data['signal']:
+            msg += f"\n\n📥 Entry: ${data['entry']:.2f}\n🛑 SL: ${data['sl']:.2f}\n🎯 TP: ${data['tp']:.2f}"
+        bot.send_message(message.chat.id, msg)
 
-def keep_alive():
-    render_url = os.environ.get("RENDER_EXTERNAL_URL", "")
+    @bot.message_handler(commands=['status'])
+    def send_status(message):
+        set_active_chat(message.chat.id)
+        bot.reply_to(message, "✅ <b>Nexus სინქრონული ბოტი აქტიურია 24/7!</b>")
+
+# --- Hourly Auto Worker ---
+def hourly_background_worker():
     while True:
-        time.sleep(600)
-        if render_url:
+        time.sleep(3600)  # ყოველ 3600 წამში (1 საათში)
+        if active_chat_id and bot:
+            btc_data = analyze_market("BTC/USDT")
+            sol_data = analyze_market("SOL/USDT")
+            
+            p_btc = f"${btc_data['price']:.2f} (RSI: {btc_data['rsi']:.1f})" if btc_data else "N/A"
+            p_sol = f"${sol_data['price']:.2f} (RSI: {sol_data['rsi']:.1f})" if sol_data else "N/A"
+
+            sig_btc = btc_data['signal'] if btc_data and btc_data['signal'] else "NEUTRAL"
+            sig_sol = sol_data['signal'] if sol_data and sol_data['signal'] else "NEUTRAL"
+
+            msg = (
+                f"⏰ <b>საათობრივი ავტომატური მონიტორინგი</b>\n\n"
+                f"🟢 <b>ბოტი აქტიურია და მუშაობს!</b>\n\n"
+                f"• <b>BTC/USDT:</b> {p_btc} | {sig_btc}\n"
+                f"• <b>SOL/USDT:</b> {p_sol} | {sig_sol}\n\n"
+                f"<i>შემდეგი შემოწმება 1 საათში!</i>"
+            )
             try:
-                requests.get(render_url, timeout=10)
+                bot.send_message(active_chat_id, msg)
             except Exception as e:
-                logging.error(f"Keep-alive error: {e}")
+                print(f"Worker send error: {e}")
 
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+# --- Flask Server ---
+app = Flask(__name__)
 
-def send_telegram_message(chat_id, text):
-    if not TELEGRAM_BOT_TOKEN:
-        return
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
-    try:
-        requests.post(url, json=payload, timeout=10)
-    except Exception as e:
-        logging.error(f"Error sending msg: {e}")
+@app.route('/')
+def home():
+    return "Nexus Crypto Bot is Live!"
 
-def fetch_latest_crypto_news():
-    url = "https://cryptopanic.com/api/v1/posts/?auth_token=free&currencies=BTC&filter=important"
-    try:
-        res = requests.get(url, timeout=10)
-        if res.status_code == 200:
-            results = res.json().get("results", [])
-            if results:
-                latest = results[0]
-                title = latest.get("title", "")
-                votes = latest.get("votes", {})
-                bullish, bearish = votes.get("positive", 0), votes.get("negative", 0)
-                
-                sentiment = "⚪ ᲜᲔᲘᲢᲠᲐᲚᲣᲠᲘ"
-                if bullish > bearish: sentiment = "🟢 ᲑᲣᲚᲘᲨᲘ"
-                elif bearish > bullish: sentiment = "🔴 ᲑᲔᲐᲠᲘᲨᲘ"
+def run_flask():
+    app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
 
-                return f"📰 **Global News:** _{title}_\n💡 **Sentiment:** {sentiment}"
-    except Exception as e:
-        logging.error(f"News error: {e}")
-    return "📰 **Global News:** ბაზარზე სტაბილური სიტუაციაა."
-
-def fetch_binance_ohlcv(symbol="BTCUSDT", interval="15m", limit=100):
-    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
-    try:
-        res = requests.get(url, timeout=10)
-        return res.json()
-    except Exception as e:
-        logging.error(f"Binance fetch error: {e}")
-        return None
-
-def calculate_atr(candles, period=14):
-    if len(candles) < period + 1:
-        return 100.0
-    tr_list = []
-    for i in range(1, len(candles)):
-        high = float(candles[i][2])
-        low = float(candles[i][3])
-        prev_close = float(candles[i-1][4])
-        tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
-        tr_list.append(tr)
-    return sum(tr_list[-period:]) / period
-
-# ----- ADVANCED SMC INSTITUTIONAL ENGINE -----
-def analyze_multi_timeframe(symbol_raw="BTCUSDT", symbol_display="BTC/USDT"):
-    candles_1h = fetch_binance_ohlcv(symbol=symbol_raw, interval="1h", limit=60)
-    candles_15m = fetch_binance_ohlcv(symbol=symbol_raw, interval="15m", limit=60)
-
-    if not candles_1h or not candles_15m:
-        return None
-
-    closes_1h = [float(c[4]) for c in candles_1h]
-    highs_1h = [float(c[2]) for c in candles_1h]
-    lows_1h = [float(c[3]) for c in candles_1h]
-    
-    ema_200_1h = sum(closes_1h[-50:]) / 50
-    current_price = float(candles_15m[-1][4])
-
-    htf_trend = "BULLISH" if current_price > ema_200_1h else "BEARISH"
-
-    closes_15m = [float(c[4]) for c in candles_15m]
-    highs_15m = [float(c[2]) for c in candles_15m]
-    lows_15m = [float(c[3]) for c in candles_15m]
-    volumes_15m = [float(c[5]) for c in candles_15m]
-
-    score = 20
-    factors = []
-    direction = htf_trend
-
-    # 1. Premium / Discount Zone Check
-    range_high_1h = max(highs_1h[-20:])
-    range_low_1h = min(lows_1h[-20:])
-    equilibrium = (range_high_1h + range_low_1h) / 2
-
-    if htf_trend == "BULLISH" and current_price < equilibrium:
-        score += 20
-        factors.append("🟢 **Discount Zone:** Bought at Low Equilibrium (+20%)")
-    elif htf_trend == "BEARISH" and current_price > equilibrium:
-        score += 20
-        factors.append("🔴 **Premium Zone:** Sold at High Equilibrium (+20%)")
-
-    # 2. Market Structure CHoCH / BOS Check
-    prev_structure_high = max(highs_15m[-15:-3])
-    prev_structure_low = min(lows_15m[-15:-3])
-
-    if htf_trend == "BULLISH" and closes_15m[-1] > prev_structure_high:
-        score += 20
-        factors.append("🚀 **Structure Shift:** Bullish CHoCH/BOS Break (+20%)")
-    elif htf_trend == "BEARISH" and closes_15m[-1] < prev_structure_low:
-        score += 20
-        factors.append("📉 **Structure Shift:** Bearish CHoCH/BOS Break (+20%)")
-
-    # 3. Liquidity Sweep
-    if htf_trend == "BULLISH" and lows_15m[-2] < prev_structure_low and closes_15m[-1] > prev_structure_low:
-        score += 20
-        factors.append("🎯 **Liquidity Sweep:** Bullish Grab (+20%)")
-    elif htf_trend == "BEARISH" and highs_15m[-2] > prev_structure_high and closes_15m[-1] < prev_structure_high:
-        score += 20
-        factors.append("🎯 **Liquidity Sweep:** Bearish Grab (+20%)")
-
-    # 4. FVG / Imbalance
-    if htf_trend == "BULLISH" and lows_15m[-1] > highs_15m[-3]:
-        score += 10
-        factors.append("⚡ **15M FVG:** Valid Imbalance (+10%)")
-    elif htf_trend == "BEARISH" and highs_15m[-1] < lows_15m[-3]:
-        score += 10
-        factors.append("⚡ **15M FVG:** Valid Imbalance (+10%)")
-
-    # 5. Volume Spike
-    avg_vol = sum(volumes_15m[-10:-1]) / 9
-    if volumes_15m[-1] > avg_vol * 1.3:
-        score += 10
-        factors.append("🔥 **Volume:** Institutional Volume Spike (+10%)")
-
-    # ATR SL / TP1 / TP2
-    atr = calculate_atr(candles_15m)
-    if direction == "BULLISH":
-        sl = round(current_price - (atr * 1.5), 2)
-        risk = current_price - sl
-        tp1 = round(current_price + (risk * 1.5), 2)
-        tp2 = round(current_price + (risk * 2.5), 2)
-    else:
-        sl = round(current_price + (atr * 1.5), 2)
-        risk = sl - current_price
-        tp1 = round(current_price - (risk * 1.5), 2)
-        tp2 = round(current_price - (risk * 2.5), 2)
-
-    return {
-        "symbol": symbol_display,
-        "direction": "LONG" if direction == "BULLISH" else "SHORT",
-        "htf_trend": htf_trend,
-        "score": score,
-        "price": current_price,
-        "sl": sl,
-        "tp1": tp1,
-        "tp2": tp2,
-        "factors": factors
-    }
-
-def poll_telegram_updates(subscribed_users):
-    offset = 0
-    while True:
-        try:
-            if TELEGRAM_BOT_TOKEN:
-                url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates?offset={offset}&timeout=30"
-                res = requests.get(url, timeout=35).json()
-                if res.get("ok"):
-                    for result in res.get("result", []):
-                        offset = result["update_id"] + 1
-                        message = result.get("message", {})
-                        chat_id = message.get("chat", {}).get("id")
-                        text = message.get("text", "")
-                        
-                        if text == "/start" and chat_id:
-                            if chat_id not in subscribed_users:
-                                subscribed_users.add(chat_id)
-                                save_users(subscribed_users)
-                            
-                            send_telegram_message(chat_id, "🤖 **Nexus Institutional SMC Engine Active!**\n\nანალიზდება: CHoCH/BOS + Discount/Premium + ATR + News.\n\n🔍 **ვასკანირებ ბაზარს...**")
-                            
-                            res = analyze_multi_timeframe("BTCUSDT", "BTC/USDT")
-                            news_info = fetch_latest_crypto_news()
-                            
-                            if res and res["score"] >= 80:
-                                factors_text = "\n".join(res["factors"])
-                                msg = f"🤖 **NEXUS INSTITUTIONAL SIGNAL**\n\n🔹 `{res['symbol']}` ({res['direction']})\n🌐 **1H Trend:** `{res['htf_trend']}`\n🎯 **Score:** `{res['score']}%`\n\n{factors_text}\n\n💰 **Entry:** `${res['price']}`\n🛑 **ATR SL:** `${res['sl']}`\n🎯 **TP1:** `${res['tp1']}`\n🎯 **TP2:** `${res['tp2']}`\n\n💡 *TP1-ზე მიღწევისას სტოპი გადაიტანეთ Entry-ზე (BE)!*\n\n🌐 {news_info}"
-                                send_telegram_message(chat_id, msg)
-                            else:
-                                send_telegram_message(chat_id, f"ℹ️ ამ ეტაპზე 80%+ სინქრონული სიგნალი არ არის (Score: `{res['score'] if res else 0}%`).\n\n🌐 {news_info}")
-        except Exception as e:
-            logging.error(f"Polling error: {e}")
-            time.sleep(5)
-        time.sleep(1)
-
-def scan_loop(subscribed_users):
-    last_signal_price = 0
-    while True:
-        try:
-            if subscribed_users:
-                res = analyze_multi_timeframe("BTCUSDT", "BTC/USDT")
-                if res and res["score"] >= 80:
-                    if abs(res["price"] - last_signal_price) > 80:
-                        last_signal_price = res["price"]
-                        news_info = fetch_latest_crypto_news()
-                        factors_text = "\n".join(res["factors"])
-                        msg = f"🤖 **NEXUS INSTITUTIONAL SIGNAL**\n\n🔹 `{res['symbol']}` ({res['direction']})\n🌐 **1H Trend:** `{res['htf_trend']}`\n🎯 **Score:** `{res['score']}%`\n\n{factors_text}\n\n💰 **Entry:** `${res['price']}`\n🛑 **ATR SL:** `${res['sl']}`\n🎯 **TP1:** `${res['tp1']}`\n🎯 **TP2:** `${res['tp2']}`\n\n💡 *TP1-ზე მიღწევისას სტოპი გადაიტანეთ Entry-ზე (BE)!*\n\n🌐 {news_info}"
-                        for u_id in list(subscribed_users):
-                            send_telegram_message(u_id, msg)
-        except Exception as e:
-            logging.error(f"Scan error: {e}")
-        time.sleep(900)
-
+# --- Main Entry Point ---
 if __name__ == "__main__":
-    Thread(target=run_web_server, daemon=True).start()
-    Thread(target=keep_alive, daemon=True).start()
-    
-    subscribed_users = load_users()
-    
-    Thread(target=scan_loop, args=(subscribed_users,), daemon=True).start()
-    logging.info("🚀 Nexus Institutional Engine Started...")
-    poll_telegram_updates(subscribed_users)
+    if not TELEGRAM_BOT_TOKEN:
+        print("Error: TELEGRAM_BOT_TOKEN missing!")
+    else:
+        try:
+            requests.get(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/deleteWebhook?drop_pending_updates=true", timeout=5)
+        except Exception as e:
+            print(f"Webhook reset error: {e}")
+
+        threading.Thread(target=run_flask, daemon=True).start()
+        threading.Thread(target=hourly_background_worker, daemon=True).start()
+
+        print("Nexus Bot is running via pyTelegramBotAPI...")
+        bot.infinity_polling(timeout=10, long_polling_timeout=5)
