@@ -32,7 +32,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/plain")
         self.end_headers()
-        self.wfile.write(b"Nexus Institutional SMC Engine is Live!")
+        self.wfile.write(b"Nexus Multi-Asset SMC Engine is Live!")
 
     def do_HEAD(self):
         self.send_response(200)
@@ -70,7 +70,7 @@ def send_telegram_message(chat_id, text):
         logging.error(f"Error sending msg: {e}")
 
 def fetch_latest_crypto_news():
-    url = "https://cryptopanic.com/api/v1/posts/?auth_token=free&currencies=BTC&filter=important"
+    url = "https://cryptopanic.com/api/v1/posts/?auth_token=free&currencies=BTC,SOL&filter=important"
     try:
         res = requests.get(url, timeout=10)
         if res.status_code == 200:
@@ -220,39 +220,51 @@ def poll_telegram_updates(subscribed_users):
                                 subscribed_users.add(chat_id)
                                 save_users(subscribed_users)
                             
-                            send_telegram_message(chat_id, "🤖 **Nexus Institutional SMC Engine Active!**\n\nანალიზდება: CHoCH/BOS + Discount/Premium + ATR + News.\n\n🔍 **ვასკანირებ ბაზარს...**")
+                            send_telegram_message(chat_id, "🤖 **Nexus Multi-Asset SMC Engine Active!**\n\nმონიტორინგშია: **BTC, SOL, PEPE, PAXG (ოქრო)**.\n\n🔍 **ვასკანირებ ბაზარს...**")
                             
                             res = analyze_multi_timeframe("BTCUSDT", "BTC/USDT")
                             news_info = fetch_latest_crypto_news()
                             
                             if res and res["score"] >= 80:
                                 factors_text = "\n".join(res["factors"])
-                                msg = f"🤖 **NEXUS INSTITUTIONAL SIGNAL**\n\n🔹 `{res['symbol']}` ({res['direction']})\n🌐 **1H Trend:** `{res['htf_trend']}`\n🎯 **Score:** `{res['score']}%`\n\n{factors_text}\n\n💰 **Entry:** `${res['price']}`\n🛑 **ATR SL:** `${res['sl']}`\n🎯 **TP1:** `${res['tp1']}`\n🎯 **TP2:** `${res['tp2']}`\n\n💡 *TP1-ზე მიღწევისას სტოპი გადაიტანეთ Entry-ზე (BE)!*\n\n🌐 {news_info}"
+                                msg = f"🤖 **NEXUS INSTITUTIONAL SIGNAL**\n\n🔹 `{res['symbol']}` ({res['direction']})\n🌐 **1H Trend:** `{res['htf_trend']}`\n🎯 **Score:** `{res['score']}%`\n\n{factors_text}\n\n💰 **Entry:** `${res['price']}`\n🛑 **ATR SL:** `${res['sl']}`\n🎯 **TP1:** `${res['tp1']}`\n🎯 **TP2:** `${res['tp2']}`\n\n🌐 {news_info}"
                                 send_telegram_message(chat_id, msg)
                             else:
-                                send_telegram_message(chat_id, f"ℹ️ ამ ეტაპზე 80%+ სინქრონული სიგნალი არ არის (Score: `{res['score'] if res else 0}%`).\n\n🌐 {news_info}")
+                                send_telegram_message(chat_id, f"ℹ️ BTC მიმდინარე სკორი: `{res['score'] if res else 0}%`.\n\n🌐 {news_info}")
         except Exception as e:
             logging.error(f"Polling error: {e}")
             time.sleep(5)
         time.sleep(1)
 
 def scan_loop(subscribed_users):
-    last_signal_price = 0
+    assets = [
+        {"raw": "BTCUSDT", "display": "BTC/USDT"},
+        {"raw": "SOLUSDT", "display": "SOL/USDT"},
+        {"raw": "PEPEUSDT", "display": "PEPE/USDT"},
+        {"raw": "PAXGUSDT", "display": "PAXG (Gold)/USDT"}
+    ]
+    
+    last_signal_prices = {asset["raw"]: 0 for asset in assets}
+
     while True:
         try:
             if subscribed_users:
-                res = analyze_multi_timeframe("BTCUSDT", "BTC/USDT")
-                if res and res["score"] >= 80:
-                    if abs(res["price"] - last_signal_price) > 80:
-                        last_signal_price = res["price"]
-                        news_info = fetch_latest_crypto_news()
-                        factors_text = "\n".join(res["factors"])
-                        msg = f"🤖 **NEXUS INSTITUTIONAL SIGNAL**\n\n🔹 `{res['symbol']}` ({res['direction']})\n🌐 **1H Trend:** `{res['htf_trend']}`\n🎯 **Score:** `{res['score']}%`\n\n{factors_text}\n\n💰 **Entry:** `${res['price']}`\n🛑 **ATR SL:** `${res['sl']}`\n🎯 **TP1:** `${res['tp1']}`\n🎯 **TP2:** `${res['tp2']}`\n\n💡 *TP1-ზე მიღწევისას სტოპი გადაიტანეთ Entry-ზე (BE)!*\n\n🌐 {news_info}"
-                        for u_id in list(subscribed_users):
-                            send_telegram_message(u_id, msg)
+                for asset in assets:
+                    res = analyze_multi_timeframe(asset["raw"], asset["display"])
+                    if res and res["score"] >= 80:
+                        if abs(res["price"] - last_signal_prices[asset["raw"]]) > (res["price"] * 0.005):
+                            last_signal_prices[asset["raw"]] = res["price"]
+                            news_info = fetch_latest_crypto_news()
+                            factors_text = "\n".join(res["factors"])
+                            
+                            msg = f"🤖 **NEXUS INSTITUTIONAL SIGNAL**\n\n🔹 `{res['symbol']}` ({res['direction']})\n🌐 **1H Trend:** `{res['htf_trend']}`\n🎯 **Score:** `{res['score']}%`\n\n{factors_text}\n\n💰 **Entry:** `${res['price']}`\n🛑 **ATR SL:** `${res['sl']}`\n🎯 **TP1:** `${res['tp1']}`\n🎯 **TP2:** `${res['tp2']}`\n\n💡 *TP1-ზე მიღწევისას სტოპი გადაიტანეთ Entry-ზე (BE)!*\n\n🌐 {news_info}"
+                            
+                            for u_id in list(subscribed_users):
+                                send_telegram_message(u_id, msg)
+                    time.sleep(5)
         except Exception as e:
             logging.error(f"Scan error: {e}")
-        time.sleep(900)
+        time.sleep(600)
 
 if __name__ == "__main__":
     subscribed_users = load_users()
@@ -260,5 +272,5 @@ if __name__ == "__main__":
     Thread(target=scan_loop, args=(subscribed_users,), daemon=True).start()
     Thread(target=keep_alive, daemon=True).start()
     
-    logging.info("🚀 Nexus Institutional Engine Started...")
+    logging.info("🚀 Nexus Multi-Asset Institutional Engine Started...")
     run_web_server()
