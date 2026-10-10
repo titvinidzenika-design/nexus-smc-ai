@@ -112,16 +112,4 @@ def calculate_atr(candles, period=14):
     return sum(tr_list[-period:]) / period
 
 # ----- ADVANCED SMC INSTITUTIONAL ENGINE -----
-def analyze_multi_timeframe(symbol_raw="BTCUSDT", symbol_display="BTC/USDT"):
-    candles_1h = fetch_binance_ohlcv(symbol=symbol_raw, interval="1h", limit=60)
-    candles_15m = fetch_binance_ohlcv(symbol=symbol_raw, interval="15m", limit=60)
-
-    if not candles_1h or not candles_15m:
-        return None
-
-    closes_1h = [float(c[4]) for c in candles_1h]
-    highs_1h = [float(c[2]) for c in candles_1h]
-    lows_1h = [float(c[3]) for c in candles_1h]
-    
-    ema_200_1h = sum(closes_1h[-50:]) / 50
-    current_
+def analyze_multi_timeframe(symbol_raw="BTCUSDT", symbol_
