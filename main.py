@@ -28,6 +28,14 @@ def save_json(filepath, data):
     except Exception as e:
         logging.error(f"Error saving {filepath}: {e}")
 
+def format_price(val):
+    if val is None:
+        return 0.0
+    val = float(val)
+    if val < 1.0:
+        return round(val, 8)
+    return round(val, 2)
+
 # ----- Health Check Server for Render & UptimeRobot -----
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -116,7 +124,7 @@ def fetch_binance_ohlcv(symbol="BTCUSDT", interval="15m", limit=100):
 
 def calculate_atr(candles, period=14):
     if not candles or len(candles) < period + 1:
-        return 100.0
+        return 0.0001
     tr_list = []
     for i in range(1, len(candles)):
         high = float(candles[i][2])
@@ -210,15 +218,15 @@ def analyze_multi_timeframe(symbol_raw="BTCUSDT", symbol_display="BTC/USDT"):
 
     atr = calculate_atr(candles_15m)
     if direction == "BULLISH":
-        sl = round(current_price - (atr * 1.5), 2)
+        sl = format_price(current_price - (atr * 1.5))
         risk = current_price - sl
-        tp1 = round(current_price + (risk * 1.5), 2)
-        tp2 = round(current_price + (risk * 2.5), 2)
+        tp1 = format_price(current_price + (risk * 1.5))
+        tp2 = format_price(current_price + (risk * 2.5))
     else:
-        sl = round(current_price + (atr * 1.5), 2)
+        sl = format_price(current_price + (atr * 1.5))
         risk = sl - current_price
-        tp1 = round(current_price - (risk * 1.5), 2)
-        tp2 = round(current_price - (risk * 2.5), 2)
+        tp1 = format_price(current_price - (risk * 1.5))
+        tp2 = format_price(current_price - (risk * 2.5))
 
     return {
         "raw_symbol": symbol_raw,
@@ -226,7 +234,7 @@ def analyze_multi_timeframe(symbol_raw="BTCUSDT", symbol_display="BTC/USDT"):
         "direction": "LONG" if direction == "BULLISH" else "SHORT",
         "htf_trend": htf_trend,
         "score": score,
-        "price": current_price,
+        "price": format_price(current_price),
         "sl": sl,
         "tp1": tp1,
         "tp2": tp2,
@@ -299,10 +307,11 @@ def track_active_trades(subscribed_users):
                     current_price = float(candles[-1][4])
                     hit_tp1 = False
                     
-                    if trade["direction"] == "LONG" and current_price >= trade["tp1"]:
-                        hit_tp1 = True
-                    elif trade["direction"] == "SHORT" and current_price <= trade["tp1"]:
-                        hit_tp1 = True
+                    if trade.get("tp1", 0) > 0:
+                        if trade["direction"] == "LONG" and current_price >= trade["tp1"]:
+                            hit_tp1 = True
+                        elif trade["direction"] == "SHORT" and current_price <= trade["tp1"]:
+                            hit_tp1 = True
                     
                     if hit_tp1:
                         msg = f"🎯 **TP1 TARGET REACHED!**\n\n" \
@@ -395,11 +404,9 @@ def scan_loop(subscribed_users):
 if __name__ == "__main__":
     subscribed_users = set(load_json(USER_FILE, []))
     
-    # 1. ფონურ თრედებში ვუშვებთ სკანირებას, ტრეკინგსა და პოლინგს
     Thread(target=poll_telegram_updates, args=(subscribed_users,), daemon=True).start()
     Thread(target=scan_loop, args=(subscribed_users,), daemon=True).start()
     Thread(target=track_active_trades, args=(subscribed_users,), daemon=True).start()
     Thread(target=keep_alive, daemon=True).start()
     
-    # 2. მთავარ თრედში ვუშვებთ Web Server-ს, რათა Render-მა პორტი მყისიერად დაინახოს
     run_web_server()
