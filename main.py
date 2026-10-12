@@ -32,7 +32,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/plain")
         self.end_headers()
-        self.wfile.write(b"Nexus 4H-15M-5M SMC Engine (70% Threshold) is Live!")
+        self.wfile.write(b"Nexus 4H-1H-15M SMC Engine (70% Threshold) is Live!")
 
     def do_HEAD(self):
         self.send_response(200)
@@ -94,6 +94,103 @@ def fetch_latest_crypto_news(symbol="BTC"):
                     if bullish > bearish: 
                         sentiment = "🟢 ᲑᲣᲚᲘᲨᲘ"
                     elif bearish > bullish: 
+                        sentiment = "🔴 Ბ```python
+import os
+import time
+import json
+import logging
+import requests
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from threading import Thread
+
+logging.basicConfig(level=logging.INFO)
+
+USER_FILE = "users.json"
+
+def load_users():
+    if os.path.exists(USER_FILE):
+        try:
+            with open(USER_FILE, "r") as f:
+                return set(json.load(f))
+        except Exception as e:
+            logging.error(f"Error loading users: {e}")
+    return set()
+
+def save_users(users):
+    try:
+        with open(USER_FILE, "w") as f:
+            json.dump(list(users), f)
+    except Exception as e:
+        logging.error(f"Error saving users: {e}")
+
+# ----- Health Check Server for Render & UptimeRobot -----
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"Nexus 4H-1H-15M SMC Engine (70% Threshold) is Live!")
+
+    def do_HEAD(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+
+    def log_message(self, format, *args):
+        return
+
+def run_web_server():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+    server.serve_forever()
+
+def keep_alive():
+    render_url = os.environ.get("RENDER_EXTERNAL_URL", "")
+    while True:
+        time.sleep(600)
+        if render_url:
+            try:
+                requests.get(render_url, timeout=10)
+            except Exception as e:
+                logging.error(f"Keep-alive error: {e}")
+
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+
+def send_telegram_message(chat_id, text):
+    if not TELEGRAM_BOT_TOKEN:
+        return
+    url = f"[https://api.telegram.org/bot](https://api.telegram.org/bot){TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
+    try:
+        requests.post(url, json=payload, timeout=10)
+    except Exception as e:
+        logging.error(f"Error sending msg: {e}")
+
+def fetch_latest_crypto_news(symbol="BTC"):
+    clean_sym = symbol.replace("USDT", "").replace("/USDT", "").split(" ")[0]
+    if "PAXG" in clean_sym or "GOLD" in clean_sym:
+        clean_sym = "BTC,SOL"
+        
+    url = f"[https://cryptopanic.com/api/v1/posts/?auth_token=free&currencies=](https://cryptopanic.com/api/v1/posts/?auth_token=free&currencies=){clean_sym}&filter=important"
+    try:
+        res = requests.get(url, timeout=10)
+        if res.status_code == 200:
+            data = res.json()
+            if isinstance(data, dict):
+                results = data.get("results", [])
+                if results and isinstance(results, list):
+                    latest = results[0]
+                    title = latest.get("title", "")
+                    votes = latest.get("votes", {})
+                    if not isinstance(votes, dict):
+                        votes = {}
+                    bullish = votes.get("positive", 0) or 0
+                    bearish = votes.get("negative", 0) or 0
+                    
+                    sentiment = "⚪ ᲜᲔᲘᲢᲠᲐᲚᲣᲠᲘ"
+                    if bullish > bearish: 
+                        sentiment = "🟢 ᲑᲣᲚᲘᲨᲘ"
+                    elif bearish > bullish: 
                         sentiment = "🔴 ᲑᲔᲐᲠᲘᲨᲘ"
 
                     return f"📰 **Global News:** _{title}_\n💡 **Sentiment:** {sentiment}"
@@ -102,7 +199,7 @@ def fetch_latest_crypto_news(symbol="BTC"):
     return "📰 **Global News:** ბაზარზე სტაბილური სიტუაციაა."
 
 def fetch_binance_ohlcv(symbol="BTCUSDT", interval="15m", limit=100):
-    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
+    url = f"[https://api.binance.com/api/v3/klines?symbol=](https://api.binance.com/api/v3/klines?symbol=){symbol}&interval={interval}&limit={limit}"
     try:
         res = requests.get(url, timeout=10)
         return res.json()
@@ -122,13 +219,13 @@ def calculate_atr(candles, period=14):
         tr_list.append(tr)
     return sum(tr_list[-period:]) / period
 
-# ----- ADVANCED 4H-15M-5M SMC INSTITUTIONAL ENGINE (70% THRESHOLD) -----
+# ----- ADVANCED 4H-1H-15M SMC INSTITUTIONAL ENGINE (70% THRESHOLD) -----
 def analyze_multi_timeframe(symbol_raw="BTCUSDT", symbol_display="BTC/USDT"):
     candles_4h = fetch_binance_ohlcv(symbol=symbol_raw, interval="4h", limit=60)
+    candles_1h = fetch_binance_ohlcv(symbol=symbol_raw, interval="1h", limit=60)
     candles_15m = fetch_binance_ohlcv(symbol=symbol_raw, interval="15m", limit=60)
-    candles_5m = fetch_binance_ohlcv(symbol=symbol_raw, interval="5m", limit=60)
 
-    if not candles_4h or not candles_15m or not candles_5m:
+    if not candles_4h or not candles_1h or not candles_15m:
         return None
 
     closes_4h = [float(c[4]) for c in candles_4h]
@@ -140,12 +237,12 @@ def analyze_multi_timeframe(symbol_raw="BTCUSDT", symbol_display="BTC/USDT"):
 
     htf_trend = "BULLISH" if current_price > ema_200_4h else "BEARISH"
 
+    closes_1h = [float(c[4]) for c in candles_1h]
+
     closes_15m = [float(c[4]) for c in candles_15m]
     highs_15m = [float(c[2]) for c in candles_15m]
     lows_15m = [float(c[3]) for c in candles_15m]
     volumes_15m = [float(c[5]) for c in candles_15m]
-
-    closes_5m = [float(c[4]) for c in candles_5m]
 
     score = 15
     factors = []
@@ -162,6 +259,14 @@ def analyze_multi_timeframe(symbol_raw="BTCUSDT", symbol_display="BTC/USDT"):
     elif htf_trend == "BEARISH" and current_price > equilibrium:
         score += 20
         factors.append("🔴 **4H Premium Zone:** Sold at High Equilibrium (+20%)")
+
+    # 1H Intermediate Momentum (+15%)
+    if htf_trend == "BULLISH" and closes_1h[-1] > closes_1h[-3]:
+        score += 15
+        factors.append("📈 **1H Structure Alignment:** Bullish Trend Momentum (+15%)")
+    elif htf_trend == "BEARISH" and closes_1h[-1] < closes_1h[-3]:
+        score += 15
+        factors.append("📉 **1H Structure Alignment:** Bearish Trend Momentum (+15%)")
 
     # 15M Structure Shift (+20%)
     prev_structure_high = max(highs_15m[-15:-3])
@@ -181,14 +286,6 @@ def analyze_multi_timeframe(symbol_raw="BTCUSDT", symbol_display="BTC/USDT"):
     elif htf_trend == "BEARISH" and highs_15m[-2] > prev_structure_high and closes_15m[-1] < prev_structure_high:
         score += 20
         factors.append("🎯 **15M Liquidity Sweep:** Bearish Grab (+20%)")
-
-    # 5M Micro Confirmation (+15%)
-    if htf_trend == "BULLISH" and closes_5m[-1] > closes_5m[-3]:
-        score += 15
-        factors.append("⚡ **5M Micro Momentum:** Bullish Trigger (+15%)")
-    elif htf_trend == "BEARISH" and closes_5m[-1] < closes_5m[-3]:
-        score += 15
-        factors.append("⚡ **5M Micro Momentum:** Bearish Trigger (+15%)")
 
     # Volume Spike (+10%)
     avg_vol = sum(volumes_15m[-10:-1]) / 9
@@ -225,7 +322,7 @@ def poll_telegram_updates(subscribed_users):
     while True:
         try:
             if TELEGRAM_BOT_TOKEN:
-                url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates?offset={offset}&timeout=30"
+                url = f"[https://api.telegram.org/bot](https://api.telegram.org/bot){TELEGRAM_BOT_TOKEN}/getUpdates?offset={offset}&timeout=30"
                 res = requests.get(url, timeout=35).json()
                 if res.get("ok"):
                     for result in res.get("result", []):
@@ -239,7 +336,7 @@ def poll_telegram_updates(subscribed_users):
                                 subscribed_users.add(chat_id)
                                 save_users(subscribed_users)
                             
-                            send_telegram_message(chat_id, "🤖 **Nexus 4H-15M-5M SMC Engine Active!**\n\n🎯 **ზღვარი:** `70% Score`\n🌐 **აქტივები (24/7):** `BTC, SOL, PEPE, PAXG (Gold)`\n\n🔍 **ვასკანირებ ბაზარს...**")
+                            send_telegram_message(chat_id, "🤖 **Nexus 4H-1H-15M SMC Engine Active!**\n\n🎯 **ზღვარი:** `70% Score`\n🌐 **აქტივები (24/7):** `BTC, SOL, PEPE, PAXG (Gold)`\n\n🔍 **ვასკანირებ ბაზარს...**")
                             
                             res = analyze_multi_timeframe("BTCUSDT", "BTC/USDT")
                             news_info = fetch_latest_crypto_news("BTC")
@@ -296,7 +393,7 @@ def scan_loop(subscribed_users):
                     news_info = fetch_latest_crypto_news("BTC")
                     reports_text = "\n".join(market_reports)
                     
-                    heartbeat_msg = f"🟢 **NEXUS HEARTBEAT (სტატუსი)**\n\nბოტი აქტიურად აკონტროლებს ბაზარს 24/7 რეჟიმში ($4H-15M-5M$). მიმდინარე მდგომარეობა:\n\n{reports_text}\n\n💤 *ბაზარი წყნარია, ველით 70%+ ზონებს.*\n\n🌐 {news_info}"
+                    heartbeat_msg = f"🟢 **NEXUS HEARTBEAT (სტატუსი)**\n\nბოტი აქტიურად აკონტროლებს ბაზარს 24/7 რეჟიმში ($4H-1H-15M$). მიმდინარე მდგომარეობა:\n\n{reports_text}\n\n💤 *ბაზარი წყნარია, ველით 70%+ ზონებს.*\n\n🌐 {news_info}"
                     
                     for u_id in list(subscribed_users):
                         send_telegram_message(u_id, heartbeat_msg)
@@ -312,5 +409,5 @@ if __name__ == "__main__":
     Thread(target=scan_loop, args=(subscribed_users,), daemon=True).start()
     Thread(target=keep_alive, daemon=True).start()
     
-    logging.info("🚀 Nexus 4H-15M-5M Multi-Asset Institutional Engine (Heartbeat Enabled) Started...")
+    logging.info("🚀 Nexus 4H-1H-15M Multi-Asset Institutional Engine Started...")
     run_web_server()
