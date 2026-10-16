@@ -4,7 +4,7 @@ import json
 import logging
 import requests
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from threading import Thread
+from threading import Thread, Lock
 
 logging.basicConfig(level=logging.INFO)
 
@@ -12,37 +12,42 @@ USER_FILE = "users.json"
 STATS_FILE = "stats.json"
 ACTIVE_TRADES_FILE = "active_trades.json"
 
+# Thread Locking მონაცემთა უსაფრთხოებისთვის
+file_lock = Lock()
+
 def load_json(filepath, default):
-    if os.path.exists(filepath):
-        try:
-            with open(filepath, "r") as f:
-                return json.load(f)
-        except Exception as e:
-            logging.error(f"Error loading {filepath}: {e}")
+    with file_lock:
+        if os.path.exists(filepath):
+            try:
+                with open(filepath, "r") as f:
+                    return json.load(f)
+            except Exception as e:
+                logging.error(f"Error loading {filepath}: {e}")
     return default
 
 def save_json(filepath, data):
-    try:
-        with open(filepath, "w") as f:
-            json.dump(data, f, indent=4)
-    except Exception as e:
-        logging.error(f"Error saving {filepath}: {e}")
+    with file_lock:
+        try:
+            with open(filepath, "w") as f:
+                json.dump(data, f, indent=4)
+        except Exception as e:
+            logging.error(f"Error saving {filepath}: {e}")
 
 def format_price(val):
     if val is None:
         return 0.0
     val = float(val)
     if val < 1.0:
-        return round(val, 8)
-    return round(val, 2)
+        return round(val, 8)  # თუ მომავალში დაბალფასიანი აქტივი იქნება
+    return round(val, 2)      # BTC, SOL, HYPE - სტანდარტული 2 ნიშანი მძიმის შემდეგ
 
-# ----- Health Check Server for Render & UptimeRobot -----
+# ----- Health Check Server Render / UptimeRobot-ისთვის (15 წთ ინტერვალი) -----
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.send_header("Content-type", "text/plain")
         self.end_headers()
-        self.wfile.write(b"Nexus 4H-1H-15M Pro Engine is Live!")
+        self.wfile.write(b"Nexus Institutional SMC Engine v2.1 is Live!")
 
     def do_HEAD(self):
         self.send_response(200)
@@ -82,7 +87,7 @@ def send_telegram_message(chat_id, text):
 
 def fetch_latest_crypto_news(symbol="BTC"):
     clean_sym = symbol.replace("USDT", "").replace("/USDT", "").split(" ")[0]
-    if "PAXG" in clean_sym or "GOLD" in clean_sym:
+    if "HYPE" in clean_sym:
         clean_sym = "BTC,SOL"
         
     url = f"https://cryptopanic.com/api/v1/posts/?auth_token=free&currencies={clean_sym}&filter=important"
@@ -134,7 +139,7 @@ def calculate_atr(candles, period=14):
         tr_list.append(tr)
     return sum(tr_list[-period:]) / period
 
-# ----- ADVANCED 4H-1H-15M SMC PRO ENGINE (WITH FVG) -----
+# ----- INSTITUTIONAL SMC ENGINE (ORDER BLOCK + STRUCTURAL SL) -----
 def analyze_multi_timeframe(symbol_raw="BTCUSDT", symbol_display="BTC/USDT"):
     candles_4h = fetch_binance_ohlcv(symbol=symbol_raw, interval="4h", limit=60)
     candles_1h = fetch_binance_ohlcv(symbol=symbol_raw, interval="1h", limit=60)
@@ -175,7 +180,7 @@ def analyze_multi_timeframe(symbol_raw="BTCUSDT", symbol_display="BTC/USDT"):
         score += 20
         factors.append("🔴 **4H Premium Zone:** Sold at High Equilibrium (+20%)")
 
-    # 2. 1H Intermediate Momentum (+15%)
+    # 2. 1H Momentum Alignment (+15%)
     if htf_trend == "BULLISH" and closes_1h[-1] > closes_1h[-3]:
         score += 15
         factors.append("📈 **1H Structure Alignment:** Bullish Trend Momentum (+15%)")
@@ -216,17 +221,31 @@ def analyze_multi_timeframe(symbol_raw="BTCUSDT", symbol_display="BTC/USDT"):
         score += 10
         factors.append("🔥 **Volume:** Institutional Volume Spike (+10%)")
 
-    atr = calculate_atr(candles_15m)
+    # --- ORDER BLOCK (OB) + 1H ATR STRUCTURAL SL LOGIC ---
+    atr_1h = calculate_atr(candles_1h, period=14)
+    recent_high_15m = max(highs_15m[-12:])  # Bearish OB / Swing High
+    recent_low_15m = min(lows_15m[-12:])    # Bullish OB / Swing Low
+
     if direction == "BULLISH":
-        sl = format_price(current_price - (atr * 1.5))
+        sl_calculated = recent_low_15m - (atr_1h * 0.8)
+        sl = format_price(sl_calculated)
+        
+        if (current_price - sl) < (atr_1h * 1.5):
+            sl = format_price(current_price - (atr_1h * 2.0))
+            
         risk = current_price - sl
-        tp1 = format_price(current_price + (risk * 1.5))
-        tp2 = format_price(current_price + (risk * 2.5))
+        tp1 = format_price(current_price + (risk * 2.0))     # RR 1:2
+        tp2 = format_price(current_price + (risk * 3.5))     # RR 1:3.5
     else:
-        sl = format_price(current_price + (atr * 1.5))
+        sl_calculated = recent_high_15m + (atr_1h * 0.8)
+        sl = format_price(sl_calculated)
+        
+        if (sl - current_price) < (atr_1h * 1.5):
+            sl = format_price(current_price + (atr_1h * 2.0))
+            
         risk = sl - current_price
-        tp1 = format_price(current_price - (risk * 1.5))
-        tp2 = format_price(current_price - (risk * 2.5))
+        tp1 = format_price(current_price - (risk * 2.0))     # RR 1:2
+        tp2 = format_price(current_price - (risk * 3.5))     # RR 1:3.5
 
     return {
         "raw_symbol": symbol_raw,
@@ -261,14 +280,14 @@ def poll_telegram_updates(subscribed_users):
                                     subscribed_users.add(chat_id)
                                     save_json(USER_FILE, list(subscribed_users))
                                 
-                                send_telegram_message(chat_id, "🤖 **Nexus 4H-1H-15M Pro Engine Active!**\n\n🎯 **ზღვარი:** `70% Score`\n📊 ბრძანება სტატისტიკისთვის: `/stats`\n🌐 **აქტივები (24/7):** `BTC, SOL, PEPE, PAXG (Gold)`\n\n🔍 **ვასკანირებ ბაზარს...**")
+                                send_telegram_message(chat_id, "🤖 **Nexus SMC Pro Engine Active!**\n\n🎯 **ზღვარი:** `70% Score`\n📊 ბრძანება სტატისტიკისთვის: `/stats`\n🌐 **აქტივები (24/7):** `BTC, SOL, HYPE`\n\n🔍 **ვასკანირებ ბაზარს...**")
                                 
                                 res = analyze_multi_timeframe("BTCUSDT", "BTC/USDT")
                                 news_info = fetch_latest_crypto_news("BTC")
                                 
                                 if res and res["score"] >= 70:
                                     factors_text = "\n".join(res["factors"])
-                                    msg = f"🤖 **NEXUS INSTITUTIONAL SIGNAL**\n\n🔹 `{res['symbol']}` ({res['direction']})\n🌐 **4H Trend:** `{res['htf_trend']}`\n🎯 **Score:** `{res['score']}%`\n\n{factors_text}\n\n💰 **Entry:** `${res['price']}`\n🛑 **ATR SL:** `${res['sl']}`\n🎯 **TP1:** `${res['tp1']}`\n🎯 **TP2:** `${res['tp2']}`\n\n🌐 {news_info}"
+                                    msg = f"🤖 **NEXUS INSTITUTIONAL SIGNAL**\n\n🔹 `{res['symbol']}` ({res['direction']})\n🌐 **4H Trend:** `{res['htf_trend']}`\n🎯 **Score:** `{res['score']}%`\n\n{factors_text}\n\n💰 **Entry:** `${res['price']}`\n🛑 **OB SL:** `${res['sl']}`\n🎯 **TP1:** `${res['tp1']}`\n🎯 **TP2:** `${res['tp2']}`\n\n🌐 {news_info}"
                                     send_telegram_message(chat_id, msg)
                                 else:
                                     send_telegram_message(chat_id, f"ℹ️ BTC მიმდინარე სკორი: `{res['score'] if res else 0}%` (ზღვარი: 70%).\n\n🌐 {news_info}")
@@ -285,8 +304,7 @@ def poll_telegram_updates(subscribed_users):
                                             f"🔹 **აქტივების მიხედვით:**\n" \
                                             f"• BTC: `{assets_cnt.get('BTC/USDT', 0)}`\n" \
                                             f"• SOL: `{assets_cnt.get('SOL/USDT', 0)}`\n" \
-                                            f"• PEPE: `{assets_cnt.get('PEPE/USDT', 0)}`\n" \
-                                            f"• PAXG: `{assets_cnt.get('PAXG (Gold)/USDT', 0)}`\n\n" \
+                                            f"• HYPE: `{assets_cnt.get('HYPE/USDT', 0)}`\n\n" \
                                             f"🟢 *სისტემა მუშაობს ავტომატურ რეჟიმში (24/7).* "
                                 send_telegram_message(chat_id, stats_msg)
 
@@ -320,7 +338,7 @@ def track_active_trades(subscribed_users):
                               f"🎯 **TP1:** `${trade['tp1']}`\n\n" \
                               f"🛡️ **მოქმედება:** გადაიტანეთ Stop-Loss `Break-Even (Entry: ${trade['price']})` დონეზე რისკის განულებისთვის!"
                         
-                        for u_id in subscribed_users:
+                        for u_id in list(subscribed_users):
                             send_telegram_message(u_id, msg)
                             
                         stats = load_json(STATS_FILE, {"total_signals": 0, "tp1_hits": 0, "assets": {}})
@@ -342,8 +360,7 @@ def scan_loop(subscribed_users):
     assets = [
         {"raw": "BTCUSDT", "display": "BTC/USDT"},
         {"raw": "SOLUSDT", "display": "SOL/USDT"},
-        {"raw": "PEPEUSDT", "display": "PEPE/USDT"},
-        {"raw": "PAXGUSDT", "display": "PAXG (Gold)/USDT"}
+        {"raw": "HYPEUSDT", "display": "HYPE/USDT"}
     ]
     
     last_signal_prices = {asset["raw"]: 0 for asset in assets}
@@ -380,7 +397,7 @@ def scan_loop(subscribed_users):
                                 news_info = fetch_latest_crypto_news(asset["display"])
                                 factors_text = "\n".join(res["factors"])
                                 
-                                msg = f"🤖 **NEXUS INSTITUTIONAL SIGNAL**\n\n🔹 `{res['symbol']}` ({res['direction']})\n🌐 **4H Trend:** `{res['htf_trend']}`\n🎯 **Score:** `{res['score']}%`\n\n{factors_text}\n\n💰 **Entry:** `${res['price']}`\n🛑 **ATR SL:** `${res['sl']}`\n🎯 **TP1:** `${res['tp1']}`\n🎯 **TP2:** `${res['tp2']}`\n\n💡 *TP1-ზე მიღწევისას ბოტი ავტომატურად გამოგიგზავნით შეხსენებას BE-სთვის!*\n\n🌐 {news_info}"
+                                msg = f"🤖 **NEXUS INSTITUTIONAL SIGNAL**\n\n🔹 `{res['symbol']}` ({res['direction']})\n🌐 **4H Trend:** `{res['htf_trend']}`\n🎯 **Score:** `{res['score']}%`\n\n{factors_text}\n\n💰 **Entry:** `${res['price']}`\n🛑 **OB SL:** `${res['sl']}`\n🎯 **TP1:** `${res['tp1']}`\n🎯 **TP2:** `${res['tp2']}`\n\n💡 *TP1-ზე მიღწევისას ბოტი ავტომატურად გამოგიგზავნით შეხსენებას BE-სთვის!*\n\n🌐 {news_info}"
                                 
                                 for u_id in list(subscribed_users):
                                     send_telegram_message(u_id, msg)
