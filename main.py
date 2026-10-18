@@ -5,37 +5,35 @@ from datetime import datetime
 from telegram import Bot
 from validator import NexusValidator
 
-# Logging კონფიგურაცია Render-ის კონსოლისთვის
+# Logging კონფიგურაცია
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# Environment Variables (Render-ზე გაწერილი Environment Variables)
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "YOUR_BOT_TOKEN_HERE")
-CHAT_ID = os.getenv("CHAT_ID", "YOUR_CHAT_ID_HERE")
+# Environment Variables-ის უსაფრთხო წაკითხვა
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
+
+# ვამოწმებთ, რომ ცვლადები ნამდვილად არსებობს
+if not TELEGRAM_TOKEN or not CHAT_ID:
+    logging.error("TELEGRAM_TOKEN ან CHAT_ID არ არის მითითებული Environment Variables-ში!")
 
 bot = Bot(token=TELEGRAM_TOKEN)
 
-# სავაჭრო წყვილები, რომლებსაც ბოტი აკონტროლებს
+# სავაჭრო წყვილები
 SYMBOLS = ["BTC/USDT", "SOL/USDT", "XAU/USDT"]
 
 
 def get_market_data(symbol: str) -> tuple[dict, dict]:
-    """
-    აქ ინტეგრირდება თქვენი ბირჟის API (ccxt / Binance / Bybit).
-    მაგალითისთვის მოცემულია იმიტირებული მონაცემები:
-    """
-    # 4H HTF Data
     htf_data = {
         "ema_200": 64000.0,
         "support_wick": 64200.0,
         "resistance_wick": 68500.0
     }
-    
-    # 15m LTF Data
+
     ltf_data = {
         "close": 65100.0,
         "entry": 65100.0,
         "volume": 2800.0,
-        "volume_ma_20": 1000.0,  # 2800 > 1000 * 2.5 (Volume Spike = TRUE)
+        "volume_ma_20": 1000.0,
         "tp_target": 67500.0
     }
     return htf_data, ltf_data
@@ -57,14 +55,19 @@ async def send_telegram_signal(trade_info: dict, symbol: str):
 🎯 <b>Take-Profit:</b> ${trade_info['take_profit']:.2f}
 ⏱ <b>Time:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 """
-    await bot.send_message(chat_id=CHAT_ID, text=message, parse_mode="HTML")
-    logging.info(f"Signal sent for {symbol}")
+    try:
+        # აუცილებლად გადავცემთ integer ტიპად ან ზუსტ სტრიქონად CHAT_ID-ს
+        target_chat_id = int(CHAT_ID) if CHAT_ID and CHAT_ID.isdigit() else CHAT_ID
+        await bot.send_message(chat_id=target_chat_id, text=message, parse_mode="HTML")
+        logging.info(f"Signal sent for {symbol} to chat {target_chat_id}")
+    except Exception as e:
+        logging.error(f"Failed to send telegram message for {symbol}: {e}")
 
 
 async def check_market_job():
     """15-წუთიანი სკანირების ციკლი"""
     logging.info("Starting market analysis cycle...")
-    
+
     for symbol in SYMBOLS:
         try:
             htf_data, ltf_data = get_market_data(symbol)
@@ -75,18 +78,17 @@ async def check_market_job():
                 await send_telegram_signal(result, symbol)
             else:
                 logging.info(f"[{symbol}] Skipped: {result['reason']}")
-                
+
         except Exception as e:
             logging.error(f"Error checking {symbol}: {e}")
 
 
 async def main():
-    """Render-ისთვის ოპტიმიზებული მთავარი Loop"""
-    logging.info("Nexus Bot operational on Render.")
-    
+    """მთავარი Loop"""
+    logging.info("Nexus Bot operational.")
+
     while True:
         await check_market_job()
-        # 15 წუთი = 900 წამი (Render-ის Free Tier-ის დასაზოგად)
         await asyncio.sleep(900)
 
 
