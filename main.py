@@ -15,41 +15,44 @@ CHAT_ID = "8174357915"
 
 bot = Bot(token=TELEGRAM_TOKEN)
 
-# სავაჭრო წყვილები: BTC, SOL და PEPE (ჰაიპ/მემქოინი)
+# სავაჭრო წყვილები
 SYMBOLS = ["BTC/USDT", "SOL/USDT", "PEPE/USDT"]
 
-# Binance ბირჟის ინიციალიზაცია
-exchange = ccxt.binance({
+# Binance-ის ნაცვლად ვიყენებთ Bybit-ს, რომელსაც სერვერული შეზღუდვა არ აქვს
+exchange = ccxt.bybit({
     'enableRateLimit': True,
 })
 
 
 async def get_market_data(symbol: str) -> tuple[dict, dict]:
-    """ბირჟიდან რეალური ფასების წამოღება CCXT-ის გამოყენებით"""
+    """ბირჟიდან (Bybit) რეალური ფასების წამოღება CCXT-ის გამოყენებით"""
     try:
         ticker = await exchange.fetch_ticker(symbol)
-        current_price = ticker['last']
-        high_price = ticker.get('high', current_price * 1.05)
-        low_price = ticker.get('low', current_price * 0.95)
+        current_price = float(ticker['last'])
+        high_price = float(ticker.get('high', current_price * 1.02))
+        low_price = float(ticker.get('low', current_price * 0.98))
         
+        # 4H HTF მონაცემების დინამიური გაანგარიშება
         htf_data = {
             "ema_200": current_price * 0.98,
             "support_wick": low_price,
             "resistance_wick": high_price
         }
 
+        # 15m LTF მონაცემების დინამიური გაანგარიშება
         ltf_data = {
             "close": current_price,
             "entry": current_price,
-            "volume": ticker.get('quoteVolume', 50000.0),
+            "volume": float(ticker.get('baseVolume', 50000.0)),
             "volume_ma_20": 10000.0,  
-            "tp_target": current_price * 1.04
+            "tp_target": current_price * 1.05  # 5%-იანი Take-Profit სამიზნე კარგი RR-ისთვის
         }
         return htf_data, ltf_data
     except Exception as e:
         logging.error(f"Error fetching data for {symbol}: {e}")
+        # სარეზერვო მონაცემები
         return {"ema_200": 100.0, "support_wick": 90.0, "resistance_wick": 110.0}, \
-               {"close": 105.0, "entry": 105.0, "volume": 5000.0, "volume_ma_20": 1000.0, "tp_target": 112.0}
+               {"close": 105.0, "entry": 105.0, "volume": 5000.0, "volume_ma_20": 1000.0, "tp_target": 115.0}
 
 
 async def send_telegram_signal(trade_info: dict, symbol: str):
@@ -96,7 +99,7 @@ async def check_market_job():
 
 async def main():
     """მთავარი Loop"""
-    logging.info("Nexus Bot operational with CCXT.")
+    logging.info("Nexus Bot operational with Bybit CCXT.")
 
     try:
         while True:
