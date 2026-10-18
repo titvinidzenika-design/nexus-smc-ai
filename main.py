@@ -2,7 +2,8 @@ import asyncio
 import os
 import logging
 from datetime import datetime
-from telegram import Bot
+from telegram import Bot, Update
+from telegram.ext import Application, CommandHandler, ContextTypes
 import aiohttp
 from validator import NexusValidator
 
@@ -20,7 +21,7 @@ SYMBOLS = ["BTC/USDT", "SOL/USDT", "HYPE/USDT"]
 
 
 async def get_market_data(symbol: str) -> tuple[dict, dict]:
-    """Binance Public API-დან ფასების წამოღება (შეზღუდვების გარეშე)"""
+    """Binance Public API-დან ფასების წამოღება"""
     try:
         formatted_symbol = symbol.replace("/", "")
         url = f"https://api.binance.com/api/v3/ticker/24hr?symbol={formatted_symbol}"
@@ -34,7 +35,6 @@ async def get_market_data(symbol: str) -> tuple[dict, dict]:
                     low_price = float(data['lowPrice'])
                     volume = float(data['quoteVolume'])
                 else:
-                    # თუ Binance Spot-ზე წყვილი არ არის (მაგ: HYPE), ვიყენებთ სარეზერვო ფასს
                     if symbol == "HYPE/USDT":
                         current_price, high_price, low_price, volume = 25.5, 27.0, 24.0, 100000.0
                     else:
@@ -89,10 +89,11 @@ async def send_telegram_signal(trade_info: dict, symbol: str):
         logging.error(f"Failed to send telegram message for {symbol}: {e}")
 
 
-async def check_market_job():
-    """15-წუთიანი სკანირების ციკლი"""
+async def check_market_job(context: ContextTypes.DEFAULT_TYPE = None):
+    """სკანირების ციკლი და საათობრივი სტატუსი"""
     logging.info("Starting market analysis cycle...")
-
+    
+    signals_found = 0
     for symbol in SYMBOLS:
         try:
             htf_data, ltf_data = await get_market_data(symbol)
@@ -101,20 +102,44 @@ async def check_market_job():
 
             if result["status"]:
                 await send_telegram_signal(result, symbol)
+                signals_found += 1
             else:
                 logging.info(f"[{symbol}] Skipped: {result['reason']}")
 
         except Exception as e:
             logging.error(f"Error checking {symbol}: {e}")
 
+    # სურვილისამებრ: თუ გსურთ რომ ყოველ ციკლზე მოგწეროთ რომ ბოტი მუშაობს
+    # კომენტარი მოხსენით ქვემოთა ხაზს:
+    # await bot.send_message(chat_id=CHAT_ID, text=f"🤖 Nexus სკანირება დასრულდა. აქტიური სიგნალები: {signals_found}")
+
+
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """ბოტის პასუხი /start ბრძანებაზე"""
+    await update.message.reply_text("🟢 Nexus Bot წარმატებით მუშაობს და აკონტროლებს ბაზარს!")
+
 
 async def main():
-    """მთავარი Loop"""
-    logging.info("Nexus Bot operational with Binance Public API.")
+    """Application-ის ინტეგრაცია ბრძანებებისა და ფონური ციკლისთვის"""
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
 
+    # /start ბრძანების დამჭერი
+    application.add_handler(CommandHandler("start", start_command))
+
+    # ვურთავთ ბოტს ფონურ სამუშაოს
+    job_queue = application.job_queue
+    # ყოველ 900 წამში (15 წუთში) ერთხელ შეამოწმოს ბაზარი
+    job_queue.run_repeating(check_market_job, interval=900, first=10)
+
+    # ვუშვებთ ბოტს
+    logging.info("Nexus Bot operational with Telegram Application.")
+    await application.initialize()
+    await application.start()
+    await application.updater.start_polling()
+
+    # მუშაობის შენარჩუნება
     while True:
-        await check_market_job()
-        await asyncio.sleep(900)
+        await asyncio.sleep(3600)
 
 
 if __name__ == "__main__":
