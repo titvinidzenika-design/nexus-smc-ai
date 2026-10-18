@@ -3,22 +3,22 @@ import os
 import logging
 from datetime import datetime
 from telegram import Bot
-import ccxt.async_support as ccxt  # ასინქრონული CCXT ბიბლიოთეკა ბირჟის ფასებისთვის
+import ccxt.async_support as ccxt
 from validator import NexusValidator
 
 # Logging კონფიგურაცია
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# ტოკენი და ჩატის ID
+# ტოკენი და CHAT_ID
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = "8174357915"
 
 bot = Bot(token=TELEGRAM_TOKEN)
 
-# სასურველი სავაჭრო წყვილები (BTC, SOL და ჰაიპ ტოკენი PEPE)
+# სავაჭრო წყვილები: BTC, SOL და PEPE (ჰაიპ/მემქოინი)
 SYMBOLS = ["BTC/USDT", "SOL/USDT", "PEPE/USDT"]
 
-# Binance ბირჟის ინიციალიზაცია (არ საჭიროებს აპი ქეის საჯარო ფასებისთვის)
+# Binance ბირჟის ინიციალიზაცია
 exchange = ccxt.binance({
     'enableRateLimit': True,
 })
@@ -32,7 +32,6 @@ async def get_market_data(symbol: str) -> tuple[dict, dict]:
         high_price = ticker.get('high', current_price * 1.05)
         low_price = ticker.get('low', current_price * 0.95)
         
-        # დინამიკურად ვთვლით ზონებს რეალური ფასის მიხედვით
         htf_data = {
             "ema_200": current_price * 0.98,
             "support_wick": low_price,
@@ -49,7 +48,6 @@ async def get_market_data(symbol: str) -> tuple[dict, dict]:
         return htf_data, ltf_data
     except Exception as e:
         logging.error(f"Error fetching data for {symbol}: {e}")
-        # ფოლბექ (სარეზერვო) იმიტირებული მონაცემები თუ ბირჟამ ვერ უპასუხა
         return {"ema_200": 100.0, "support_wick": 90.0, "resistance_wick": 110.0}, \
                {"close": 105.0, "entry": 105.0, "volume": 5000.0, "volume_ma_20": 1000.0, "tp_target": 112.0}
 
@@ -65,9 +63,9 @@ async def send_telegram_signal(trade_info: dict, symbol: str):
 ✅ <b>4. Volume:</b> Volume Spike Confirmed (> 2.5x)
 ✅ <b>5. Risk/Reward:</b> 1:{trade_info['rr']:.2f}
 
-📍 <b>Entry Price:</b> ${trade_info['entry']:.4f}
-📉 <b>Stop-Loss:</b> ${trade_info['stop_loss']:.4f} (Below 4H Wick)
-🎯 <b>Take-Profit:</b> ${trade_info['take_profit']:.4f}
+📍 <b>Entry Price:</b> ${trade_info['entry']:.6f}
+📉 <b>Stop-Loss:</b> ${trade_info['stop_loss']:.6f} (Below 4H Wick)
+🎯 <b>Take-Profit:</b> ${trade_info['take_profit']:.6f}
 ⏱ <b>Time:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 """
     try:
