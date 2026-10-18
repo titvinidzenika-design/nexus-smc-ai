@@ -1,47 +1,94 @@
-class NexusValidator:
+import asyncio
+import os
+import logging
+from datetime import datetime
+from telegram import Bot
+from validator import NexusValidator
+
+# Logging კონფიგურაცია Render-ის კონსოლისთვის
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+# Environment Variables (Render-ზე გაწერილი Environment Variables)
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "YOUR_BOT_TOKEN_HERE")
+CHAT_ID = os.getenv("CHAT_ID", "YOUR_CHAT_ID_HERE")
+
+bot = Bot(token=TELEGRAM_TOKEN)
+
+# სავაჭრო წყვილები, რომლებსაც ბოტი აკონტროლებს
+SYMBOLS = ["BTC/USDT", "SOL/USDT", "XAU/USDT"]
+
+
+def get_market_data(symbol: str) -> tuple[dict, dict]:
     """
-    Nexus Bot Trade Validator
-    ამოწმებს ჯონ მერფის 5-პუნქტიან ჩეკლისტს
+    აქ ინტეგრირდება თქვენი ბირჟის API (ccxt / Binance / Bybit).
+    მაგალითისთვის მოცემულია იმიტირებული მონაცემები:
     """
-    def __init__(self, htf_data: dict, ltf_data: dict):
-        self.htf = htf_data  # 4H data: {'ema_200': float, 'support_wick': float, 'resistance_wick': float}
-        self.ltf = ltf_data  # 15m data: {'close': float, 'entry': float, 'volume': float, 'volume_ma_20': float, 'tp_target': float}
+    # 4H HTF Data
+    htf_data = {
+        "ema_200": 64000.0,
+        "support_wick": 64200.0,
+        "resistance_wick": 68500.0
+    }
+    
+    # 15m LTF Data
+    ltf_data = {
+        "close": 65100.0,
+        "entry": 65100.0,
+        "volume": 2800.0,
+        "volume_ma_20": 1000.0,  # 2800 > 1000 * 2.5 (Volume Spike = TRUE)
+        "tp_target": 67500.0
+    }
+    return htf_data, ltf_data
 
-    def validate_long_setup(self) -> dict:
-        entry = self.ltf["entry"]
-        close = self.ltf["close"]
-        
-        # 1. HTF ტრენდის ფილტრი (4H EMA 200-ის ზემოთ)
-        if close < self.htf["ema_200"]:
-            return {"status": False, "reason": "HTF Downtrend Block (Below 4H EMA 200)"}
 
-        # 2. Volume Spike ფილტრი (> 2.5x Volume MA 20)
-        required_volume = self.ltf["volume_ma_20"] * 2.5
-        if self.ltf["volume"] < required_volume:
-            return {"status": False, "reason": f"Low Volume Spike ({self.ltf['volume']:.1f} < {required_volume:.1f})"}
+async def send_telegram_signal(trade_info: dict, symbol: str):
+    """Telegram-ში სრული სავაჭრო სიგნალის გაგზავნა"""
+    message = f"""
+🚨 <b>NEXUS SIGNAL CONFIRMED: {symbol} (LONG)</b>
+----------------------------------------
+✅ <b>1. HTF Trend (4H):</b> Uptrend (Above EMA 200)
+✅ <b>2. HTF Level:</b> HTF Demand Zone Test
+✅ <b>3. LTF Pattern (15m):</b> Breakout & Retest
+✅ <b>4. Volume:</b> Volume Spike Confirmed (> 2.5x)
+✅ <b>5. Risk/Reward:</b> 1:{trade_info['rr']:.2f}
 
-        # 3. HTF Stop-Loss (4H ჩრდილის/Wick-ის მიღმა + 0.2% ბუფერი)
-        stop_loss = self.htf["support_wick"] * 0.998
-        take_profit = self.ltf["tp_target"]
+📍 <b>Entry Price:</b> ${trade_info['entry']:.2f}
+📉 <b>Stop-Loss:</b> ${trade_info['stop_loss']:.2f} (Below 4H Wick)
+🎯 <b>Take-Profit:</b> ${trade_info['take_profit']:.2f}
+⏱ <b>Time:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+"""
+    await bot.send_message(chat_id=CHAT_ID, text=message, parse_mode="HTML")
+    logging.info(f"Signal sent for {symbol}")
 
-        # 4. Risk / Reward Ratio გაანგარიშება (Min 1:2)
-        risk = entry - stop_loss
-        reward = take_profit - entry
 
-        if risk <= 0:
-            return {"status": False, "reason": "Invalid Stop-Loss Placement"}
+async def check_market_job():
+    """15-წუთიანი სკანირების ციკლი"""
+    logging.info("Starting market analysis cycle...")
+    
+    for symbol in SYMBOLS:
+        try:
+            htf_data, ltf_data = get_market_data(symbol)
+            validator = NexusValidator(htf_data, ltf_data)
+            result = validator.validate_long_setup()
 
-        rr_ratio = reward / risk
+            if result["status"]:
+                await send_telegram_signal(result, symbol)
+            else:
+                logging.info(f"[{symbol}] Skipped: {result['reason']}")
+                
+        except Exception as e:
+            logging.error(f"Error checking {symbol}: {e}")
 
-        if rr_ratio < 2.0:
-            return {"status": False, "reason": f"Low Risk/Reward Ratio (1:{rr_ratio:.2f} < 1:2.00)"}
 
-        # თუ 5-ვე პუნქტი checked: true-ა:
-        return {
-            "status": True,
-            "entry": entry,
-            "stop_loss": stop_loss,
-            "take_profit": take_profit,
-            "rr": rr_ratio,
-            "reason": "All 5 Checklist criteria PASSED!"
-        }
+async def main():
+    """Render-ისთვის ოპტიმიზებული მთავარი Loop"""
+    logging.info("Nexus Bot operational on Render.")
+    
+    while True:
+        await check_market_job()
+        # 15 წუთი = 900 წამი (Render-ის Free Tier-ის დასაზოგად)
+        await asyncio.sleep(900)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
