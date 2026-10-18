@@ -8,13 +8,9 @@ from validator import NexusValidator
 # Logging კონფიგურაცია
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# Environment Variables-ის უსაფრთხო წაკითხვა
+# ტოკენი იკითხება Railway-ს Variables-დან, ხოლო CHAT_ID მყარად არის ჩაწერილი
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
-
-# ვამოწმებთ, რომ ცვლადები ნამდვილად არსებობს
-if not TELEGRAM_TOKEN or not CHAT_ID:
-    logging.error("TELEGRAM_TOKEN ან CHAT_ID არ არის მითითებული Environment Variables-ში!")
+CHAT_ID = "8174357915"
 
 bot = Bot(token=TELEGRAM_TOKEN)
 
@@ -56,10 +52,8 @@ async def send_telegram_signal(trade_info: dict, symbol: str):
 ⏱ <b>Time:</b> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 """
     try:
-        # აუცილებლად გადავცემთ integer ტიპად ან ზუსტ სტრიქონად CHAT_ID-ს
-        target_chat_id = int(CHAT_ID) if CHAT_ID and CHAT_ID.isdigit() else CHAT_ID
-        await bot.send_message(chat_id=target_chat_id, text=message, parse_mode="HTML")
-        logging.info(f"Signal sent for {symbol} to chat {target_chat_id}")
+        await bot.send_message(chat_id=CHAT_ID, text=message, parse_mode="HTML")
+        logging.info(f"Signal sent for {symbol} to chat {CHAT_ID}")
     except Exception as e:
         logging.error(f"Failed to send telegram message for {symbol}: {e}")
 
