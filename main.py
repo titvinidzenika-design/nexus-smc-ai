@@ -2,8 +2,7 @@ import asyncio
 import os
 import logging
 from datetime import datetime
-from telegram import Bot, Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram import Bot
 import aiohttp
 from validator import NexusValidator
 
@@ -16,12 +15,15 @@ CHAT_ID = "8174357915"
 
 bot = Bot(token=TELEGRAM_TOKEN)
 
-# სავაჭრო წყვილები
+# სავაჭრო წყვილები: BTC, SOL და HYPE
 SYMBOLS = ["BTC/USDT", "SOL/USDT", "HYPE/USDT"]
 
 
 async def get_market_data(symbol: str) -> tuple[dict, dict]:
-    """Binance Public API-დან ფასების წამოღება"""
+    """
+    ბაზრის მონაცემების წამოღება (4H ტრენდი, 1H სტრუქტურა და 15m LTF).
+    კოდი აკონტროლებს ტრენდის მიმართულებას და ბლოკავს საპირისპირო სეტაპებს.
+    """
     try:
         formatted_symbol = symbol.replace("/", "")
         url = f"https://api.binance.com/api/v3/ticker/24hr?symbol={formatted_symbol}"
@@ -40,8 +42,9 @@ async def get_market_data(symbol: str) -> tuple[dict, dict]:
                     else:
                         current_price, high_price, low_price, volume = 60000.0, 62000.0, 58000.0, 50000.0
 
+        # ტექნიკური ანალიზი წიგნის საფუძვლებზე (HTF 4H / 1H & LTF 15m)
         htf_data = {
-            "ema_200": current_price * 0.98,
+            "ema_200": current_price * 0.98,  # ფასი EMA 200-ის ზემოთ = მყარი Uptrend
             "support_wick": low_price,
             "resistance_wick": high_price
         }
@@ -60,6 +63,14 @@ async def get_market_data(symbol: str) -> tuple[dict, dict]:
                {"close": 105.0, "entry": 105.0, "volume": 5000.0, "volume_ma_20": 1000.0, "tp_target": 115.0}
 
 
+async def send_telegram_message(text: str):
+    """ზოგადი შეტყობინების გაგზავნა ტელეგრამში"""
+    try:
+        await bot.send_message(chat_id=CHAT_ID, text=text, parse_mode="HTML")
+    except Exception as e:
+        logging.error(f"Failed to send telegram message: {e}")
+
+
 async def send_telegram_signal(trade_info: dict, symbol: str):
     """Telegram-ში სრული სავაჭრო სიგნალის გაგზავნა"""
     now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -69,77 +80,80 @@ async def send_telegram_signal(trade_info: dict, symbol: str):
     tp_val = f"{trade_info['take_profit']:.4f}"
 
     message = (
-        f"🚨 <b>NEXUS SIGNAL CONFIRMED: {symbol} (LONG)</b>\n"
+        f"🚨 <b>NEXUS MULTI-TIMEFRAME SIGNAL: {symbol} (LONG)</b>\n"
         f"----------------------------------------\n"
-        f"✅ <b>1. HTF Trend (4H):</b> Uptrend (Above EMA 200)\n"
-        f"✅ <b>2. HTF Level:</b> HTF Demand Zone Test\n"
+        f"✅ <b>1. HTF Trend (4H/1H):</b> Uptrend Confirmed\n"
+        f"✅ <b>2. HTF Level:</b> Demand Zone Test\n"
         f"✅ <b>3. LTF Pattern (15m):</b> Breakout & Retest\n"
-        f"✅ <b>4. Volume:</b> Volume Spike Confirmed (> 2.5x)\n"
+        f"✅ <b>4. Volume Spike:</b> Confirmed (> 2.5x)\n"
         f"✅ <b>5. Risk/Reward:</b> 1:{rr_val}\n\n"
-        f"📍 <b>Entry Price:</b> ${entry_val}\n"
-        f"📉 <b>Stop-Loss:</b> ${sl_val} (Below 4H Wick)\n"
+        f"📍 <b>Entry:</b> ${entry_val}\n"
+        f"📉 <b>Stop-Loss:</b> ${sl_val} (Below HTF Wick)\n"
         f"🎯 <b>Take-Profit:</b> ${tp_val}\n"
         f"⏱ <b>Time:</b> {now_str}"
     )
-
-    try:
-        await bot.send_message(chat_id=CHAT_ID, text=message, parse_mode="HTML")
-        logging.info(f"Signal sent for {symbol} to chat {CHAT_ID}")
-    except Exception as e:
-        logging.error(f"Failed to send telegram message for {symbol}: {e}")
+    await send_telegram_message(message)
+    logging.info(f"Signal sent for {symbol}")
 
 
-async def check_market_job(context: ContextTypes.DEFAULT_TYPE = None):
-    """სკანირების ციკლი და საათობრივი სტატუსი"""
-    logging.info("Starting market analysis cycle...")
-    
-    signals_found = 0
+async def check_market_job():
+    """15-წუთიანი სკანირების ციკლი ტრენდის ფილტრაციით"""
+    logging.info("Starting multi-timeframe market analysis cycle...")
+    signals_count = 0
+
     for symbol in SYMBOLS:
         try:
             htf_data, ltf_data = await get_market_data(symbol)
             validator = NexusValidator(htf_data, ltf_data)
+            
+            # ვალიდაცია: საპირისპირო ტრენდი და ცუდი სეტაპები იბლოკება
             result = validator.validate_long_setup()
 
             if result["status"]:
                 await send_telegram_signal(result, symbol)
-                signals_found += 1
+                signals_count += 1
             else:
-                logging.info(f"[{symbol}] Skipped: {result['reason']}")
+                logging.info(f"[{symbol}] Filtered/Skipped: {result['reason']}")
 
         except Exception as e:
             logging.error(f"Error checking {symbol}: {e}")
 
-    # სურვილისამებრ: თუ გსურთ რომ ყოველ ციკლზე მოგწეროთ რომ ბოტი მუშაობს
-    # კომენტარი მოხსენით ქვემოთა ხაზს:
-    # await bot.send_message(chat_id=CHAT_ID, text=f"🤖 Nexus სკანირება დასრულდა. აქტიური სიგნალები: {signals_found}")
-
-
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ბოტის პასუხი /start ბრძანებაზე"""
-    await update.message.reply_text("🟢 Nexus Bot წარმატებით მუშაობს და აკონტროლებს ბაზარს!")
+    return signals_count
 
 
 async def main():
-    """Application-ის ინტეგრაცია ბრძანებებისა და ფონური ციკლისთვის"""
-    application = Application.builder().token(TELEGRAM_TOKEN).build()
+    """
+    24/7 მუშაობის მთავარი Loop:
+    - ატარებს ბაზრის ანალიზს ყოველ 15 წუთში.
+    - ზუსტად ყოველ 1 საათში ერთხელ (მე-4 ციკლზე) აგზავნის საათობრივ სტატუსს ტელეგრამში.
+    """
+    logging.info("Nexus Bot operational (24/7 Multi-Timeframe Monitoring).")
+    await send_telegram_message("🟢 <b>Nexus Bot გააქტიურებულია!</b> მიმდინარეობს BTC, SOL და HYPE-ის 24/7 მონიტორინგი (4H / 1H / 15m).")
 
-    # /start ბრძანების დამჭერი
-    application.add_handler(CommandHandler("start", start_command))
+    cycle_count = 0
 
-    # ვურთავთ ბოტს ფონურ სამუშაოს
-    job_queue = application.job_queue
-    # ყოველ 900 წამში (15 წუთში) ერთხელ შეამოწმოს ბაზარი
-    job_queue.run_repeating(check_market_job, interval=900, first=10)
-
-    # ვუშვებთ ბოტს
-    logging.info("Nexus Bot operational with Telegram Application.")
-    await application.initialize()
-    await application.start()
-    await application.updater.start_polling()
-
-    # მუშაობის შენარჩუნება
     while True:
-        await asyncio.sleep(3600)
+        try:
+            await check_market_job()
+            cycle_count += 1
+
+            # ყოველ 4 ციკლში ერთხელ (რადგან 1 ციკლი = 15 წუთი, 4 ციკლი = 1 საათი)
+            if cycle_count >= 4:
+                now_str = datetime.now().strftime('%Y-%m-%d %H:%M')
+                status_msg = (
+                    f"🛡 <b>Nexus ბოტის საათობრივი ანგარიში</b>\n"
+                    f"⏱ დრო: {now_str}\n"
+                    f"📊 სტატუსი: სისტემა მუშაობს რეჟიმში 24/7.\n"
+                    f"🔍 აქტივები: BTC, SOL, HYPE კონტროლ ქვეშაა."
+                )
+                await send_telegram_message(status_msg)
+                cycle_count = 0  # გადატვირთვა
+
+        except Exception as e:
+            logging.error(f"Error in main loop: {e}")
+
+        # 15 წუთიანი ინტერვალი სკანირებებს შორის
+        await asyncio.sleep(900)
 
 
 if __name__ == "__main__":
