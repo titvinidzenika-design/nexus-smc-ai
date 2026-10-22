@@ -45,7 +45,7 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-type", "text/plain")
         self.end_headers()
-        self.wfile.write(b"Nexus Multi-TF ALMA/EMA Scalping Engine is Live!")
+        self.wfile.write(b"Nexus Scalping Engine (1:1.5 - 1:2) is Live!")
 
     def log_message(self, format, *args):
         return
@@ -108,7 +108,6 @@ def calculate_ema(prices, period):
     return ema
 
 def analyze_market(symbol_raw="BTCUSDT", symbol_display="BTC/USDT"):
-    # ტაიმფრეიმები: 15m (სკალპინგი), 1h (იმპულსი), 4h (ტრენდი)
     candles_15m = fetch_binance_ohlcv(symbol=symbol_raw, interval="15m", limit=100)
     candles_1h = fetch_binance_ohlcv(symbol=symbol_raw, interval="1h", limit=50)
     candles_4h = fetch_binance_ohlcv(symbol=symbol_raw, interval="4h", limit=50)
@@ -118,43 +117,44 @@ def analyze_market(symbol_raw="BTCUSDT", symbol_display="BTC/USDT"):
 
     closes_15m = [float(c[4]) for c in candles_15m]
     closes_1h = [float(c[4]) for c in candles_1h]
-    closes_4h = [float(c[4]) for c in candles_4h]
+    closes_4h = [float(c[4]) for c in candles_1h]
     current_price = closes_15m[-1]
 
-    # 1. გრძელვადიანი ტრენდის ფილტრი ALMA (200, 0.7, 20) 4H და 1H ტაიმფრეიმზე
+    # ტრენდის ფილტრი ALMA (200, 0.7, 20)
     alma_200_4h = calculate_alma(closes_4h, window=min(200, len(closes_4h)), offset=0.7, sigma=20.0)
     trend_4h = "LONG" if closes_4h[-1] > alma_200_4h else "SHORT"
 
     alma_200_1h = calculate_alma(closes_1h, window=min(200, len(closes_1h)), offset=0.7, sigma=20.0)
     trend_1h = "LONG" if closes_1h[-1] > alma_200_1h else "SHORT"
 
-    # 2. 15 წუთიანი სკალპინგი EMA 9 / 21 გადაკვეთით
+    # 15 წუთიანი EMA 9 / 21 სკალპინგი
     ema_9_15m = calculate_ema(closes_15m, 9)
     ema_21_15m = calculate_ema(closes_15m, 21)
     scalp_dir = "LONG" if ema_9_15m > ema_21_15m else "SHORT"
 
-    # ტრენდის საპირისპირო სიგნალების მკაცრი ბლოკირება
+    # საპირისპირო ტრენდის ბლოკირება
     if trend_4h != scalp_dir or trend_1h != scalp_dir:
-        logging.info(f"[{symbol_display}] Filtered: Counter-trend signal blocked (4H Trend: {trend_4h}, 1H Trend: {trend_1h}, Scalp: {scalp_dir})")
         return None
 
-    score = 75 # რადგან ტრენდი და სკალპინგი ემთხვევა
+    # რისკ-რევორდის გათვლა და ოპტიმიზაცია (1:1.5 - 1:2 დიაპაზონისთვის)
+    risk = current_price * 0.012  # 1.2% რისკის ზონა
+    rr_ratio = 2.0  # მაქსიმალური სამიზნე 1:2
+    
+    if scalp_dir == "LONG":
+        sl = format_price(current_price - risk)
+        tp1 = format_price(current_price + (risk * 1.5))
+        tp2 = format_price(current_price + (risk * rr_ratio))
+    else:
+        sl = format_price(current_price + risk)
+        tp1 = format_price(current_price - (risk * 1.5))
+        tp2 = format_price(current_price - (risk * rr_ratio))
+
+    score = 78
     factors = [
         f"🟢 **4H Trend (ALMA 200):** {trend_4h}",
         f"🟢 **1H Trend (ALMA 200):** {trend_1h}",
         f"⚡ **15M Scalp (EMA 9/21):** {scalp_dir} Crossover"
     ]
-
-    # Risk/Reward გათვლა: 1:1.5 დან 1:2.0 მდე
-    risk = current_price * 0.01  # 1% რისკი SL-ისთვის
-    if scalp_dir == "LONG":
-        sl = format_price(current_price - risk)
-        tp1 = format_price(current_price + (risk * 1.5)) # TP1 -> 1:1.5
-        tp2 = format_price(current_price + (risk * 2.0)) # TP2 -> 1:2.0
-    else:
-        sl = format_price(current_price + risk)
-        tp1 = format_price(current_price - (risk * 1.5)) # TP1 -> 1:1.5
-        tp2 = format_price(current_price - (risk * 2.0)) # TP2 -> 1:2.0
 
     return {
         "raw_symbol": symbol_raw,
@@ -186,18 +186,17 @@ def poll_telegram_updates(subscribed_users):
                             if chat_id not in subscribed_users:
                                 subscribed_users.add(chat_id)
                                 save_json(USER_FILE, list(subscribed_users))
-                            send_telegram_message(chat_id, "🤖 **Nexus Scalp Engine Active!**\n\n📊 ალგორითმი მუშაობს: ALMA (200/0.7/20) + EMA 9/21 სკალპინგი. ტრენდის საპირისპირო სიგნალები დაბლოკილია.")
+                            send_telegram_message(chat_id, "🤖 **Nexus Scalp Engine Active!**\n\n📊 სტრუქტურა მუშაობს: ALMA + EMA 9/21 (Risk/Reward 1:1.5 - 1:2).")
         except Exception as e:
             logging.error(f"Polling error: {e}")
             time.sleep(5)
         time.sleep(1)
 
 def heartbeat_loop(subscribed_users):
-    """საათობრივი მიმოხილვა (Heartbeat) ბოტის მუშაობის შესამოწმებლად"""
     while True:
-        time.sleep(3600) # ყოველ 1 საათში
+        time.sleep(3600)
         if subscribed_users:
-            msg = "🛡️ **Nexus ბოტის საათობრივი ანგარიში**\n\n⏱️ სტატუსი: სისტემა მუშაობს რეჟიმში 24/7.\n🔍 აქტივები: BTC, SOL, HYPE კონტროლქვეშაა (ტრენდული ფილტრი აქტიურია)."
+            msg = "🛡️ **Nexus ბოტის საათობრივი ანგარიში**\n\n⏱️ სტატუსი: სისტემა მუშაობს რეჟიმში 24/7 (Risk/Reward ოპტიმიზებულია 1:2-ზე)."
             for u_id in list(subscribed_users):
                 send_telegram_message(u_id, msg)
 
@@ -222,8 +221,7 @@ def scan_loop(subscribed_users):
                     time.sleep(5)
         except Exception as e:
             logging.error(f"Scan error: {e}")
-        python_interval = 180 # 3 წუთიანი სკანირების ციკლი
-        time.sleep(python_interval)
+        time.sleep(180)
 
 if __name__ == "__main__":
     subscribed_users = set(load_json(USER_FILE, []))
