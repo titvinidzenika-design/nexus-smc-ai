@@ -1,160 +1,233 @@
-import asyncio
+import math
 import os
+import time
+import json
 import logging
-from datetime import datetime
-from telegram import Bot
-import aiohttp
-from validator import NexusValidator
+import requests
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from threading import Thread, Lock
 
-# Logging კონფიგურაცია
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logging.basicConfig(level=logging.INFO)
 
-# ტოკენი და CHAT_ID
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHAT_ID = "8174357915"
+USER_FILE = "users.json"
+STATS_FILE = "stats.json"
 
-bot = Bot(token=TELEGRAM_TOKEN)
+file_lock = Lock()
 
-# სავაჭრო წყვილები: BTC, SOL და HYPE
-SYMBOLS = ["BTC/USDT", "SOL/USDT", "HYPE/USDT"]
+def load_json(filepath, default):
+    with file_lock:
+        if os.path.exists(filepath):
+            try:
+                with open(filepath, "r") as f:
+                    return json.load(f)
+            except Exception as e:
+                logging.error(f"Error loading {filepath}: {e}")
+    return default
 
-
-async def get_market_data(symbol: str) -> tuple[dict, dict]:
-    """
-    ბაზრის მონაცემების წამოღება (4H ტრენდი, 1H სტრუქტურა და 15m LTF).
-    კოდი აკონტროლებს ტრენდის მიმართულებას და ბლოკავს საპირისპირო სეტაპებს.
-    """
-    try:
-        formatted_symbol = symbol.replace("/", "")
-        url = f"https://api.binance.com/api/v3/ticker/24hr?symbol={formatted_symbol}"
-
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    current_price = float(data['lastPrice'])
-                    high_price = float(data['highPrice'])
-                    low_price = float(data['lowPrice'])
-                    volume = float(data['quoteVolume'])
-                else:
-                    if symbol == "HYPE/USDT":
-                        current_price, high_price, low_price, volume = 25.5, 27.0, 24.0, 100000.0
-                    else:
-                        current_price, high_price, low_price, volume = 60000.0, 62000.0, 58000.0, 50000.0
-
-        # ტექნიკური ანალიზი წიგნის საფუძვლებზე (HTF 4H / 1H & LTF 15m)
-        htf_data = {
-            "ema_200": current_price * 0.98,  # ფასი EMA 200-ის ზემოთ = მყარი Uptrend
-            "support_wick": low_price,
-            "resistance_wick": high_price
-        }
-
-        ltf_data = {
-            "close": current_price,
-            "entry": current_price,
-            "volume": volume,
-            "volume_ma_20": volume / 3.0,
-            "tp_target": current_price * 1.05
-        }
-        return htf_data, ltf_data
-    except Exception as e:
-        logging.error(f"Error fetching data for {symbol}: {e}")
-        return {"ema_200": 100.0, "support_wick": 90.0, "resistance_wick": 110.0}, \
-               {"close": 105.0, "entry": 105.0, "volume": 5000.0, "volume_ma_20": 1000.0, "tp_target": 115.0}
-
-
-async def send_telegram_message(text: str):
-    """ზოგადი შეტყობინების გაგზავნა ტელეგრამში"""
-    try:
-        await bot.send_message(chat_id=CHAT_ID, text=text, parse_mode="HTML")
-    except Exception as e:
-        logging.error(f"Failed to send telegram message: {e}")
-
-
-async def send_telegram_signal(trade_info: dict, symbol: str):
-    """Telegram-ში სრული სავაჭრო სიგნალის გაგზავნა"""
-    now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    rr_val = f"{trade_info['rr']:.2f}"
-    entry_val = f"{trade_info['entry']:.4f}"
-    sl_val = f"{trade_info['stop_loss']:.4f}"
-    tp_val = f"{trade_info['take_profit']:.4f}"
-
-    message = (
-        f"🚨 <b>NEXUS MULTI-TIMEFRAME SIGNAL: {symbol} (LONG)</b>\n"
-        f"----------------------------------------\n"
-        f"✅ <b>1. HTF Trend (4H/1H):</b> Uptrend Confirmed\n"
-        f"✅ <b>2. HTF Level:</b> Demand Zone Test\n"
-        f"✅ <b>3. LTF Pattern (15m):</b> Breakout & Retest\n"
-        f"✅ <b>4. Volume Spike:</b> Confirmed (> 2.5x)\n"
-        f"✅ <b>5. Risk/Reward:</b> 1:{rr_val}\n\n"
-        f"📍 <b>Entry:</b> ${entry_val}\n"
-        f"📉 <b>Stop-Loss:</b> ${sl_val} (Below HTF Wick)\n"
-        f"🎯 <b>Take-Profit:</b> ${tp_val}\n"
-        f"⏱ <b>Time:</b> {now_str}"
-    )
-    await send_telegram_message(message)
-    logging.info(f"Signal sent for {symbol}")
-
-
-async def check_market_job():
-    """15-წუთიანი სკანირების ციკლი ტრენდის ფილტრაციით"""
-    logging.info("Starting multi-timeframe market analysis cycle...")
-    signals_count = 0
-
-    for symbol in SYMBOLS:
+def save_json(filepath, data):
+    with file_lock:
         try:
-            htf_data, ltf_data = await get_market_data(symbol)
-            validator = NexusValidator(htf_data, ltf_data)
-            
-            # ვალიდაცია: საპირისპირო ტრენდი და ცუდი სეტაპები იბლოკება
-            result = validator.validate_long_setup()
-
-            if result["status"]:
-                await send_telegram_signal(result, symbol)
-                signals_count += 1
-            else:
-                logging.info(f"[{symbol}] Filtered/Skipped: {result['reason']}")
-
+            with open(filepath, "w") as f:
+                json.dump(data, f, indent=4)
         except Exception as e:
-            logging.error(f"Error checking {symbol}: {e}")
+            logging.error(f"Error saving {filepath}: {e}")
 
-    return signals_count
+def format_price(val):
+    if val is None:
+        return 0.0
+    val = float(val)
+    if val < 1.0:
+        return round(val, 8)
+    return round(val, 2)
 
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"Nexus Multi-TF ALMA/EMA Scalping Engine is Live!")
 
-async def main():
-    """
-    24/7 მუშაობის მთავარი Loop:
-    - ატარებს ბაზრის ანალიზს ყოველ 15 წუთში.
-    - ზუსტად ყოველ 1 საათში ერთხელ (მე-4 ციკლზე) აგზავნის საათობრივ სტატუსს ტელეგრამში.
-    """
-    logging.info("Nexus Bot operational (24/7 Multi-Timeframe Monitoring).")
-    await send_telegram_message("🟢 <b>Nexus Bot გააქტიურებულია!</b> მიმდინარეობს BTC, SOL და HYPE-ის 24/7 მონიტორინგი (4H / 1H / 15m).")
+    def log_message(self, format, *args):
+        return
 
-    cycle_count = 0
+def run_web_server():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+    server.serve_forever()
+
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+
+def send_telegram_message(chat_id, text):
+    if not TELEGRAM_BOT_TOKEN:
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
+    try:
+        requests.post(url, json=payload, timeout=10)
+    except Exception as e:
+        logging.error(f"Error sending msg: {e}")
+
+def fetch_binance_ohlcv(symbol="BTCUSDT", interval="15m", limit=100):
+    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
+    try:
+        res = requests.get(url, timeout=10)
+        if res.status_code == 200:
+            return res.json()
+    except Exception as e:
+        logging.error(f"Binance fetch error ({symbol} {interval}): {e}")
+    return None
+
+def calculate_alma(prices, window=200, offset=0.7, sigma=20.0):
+    if len(prices) < window:
+        window = len(prices)
+    if window < 2:
+        return prices[-1]
+    
+    m = math.floor(offset * (window - 1))
+    s = window / sigma if sigma != 0 else 1.0
+    weights = []
+    sum_weights = 0
+    
+    for i in range(window):
+        w = math.exp(-((i - m) ** 2) / (2 * (s ** 2))) if s > 0 else 1.0
+        weights.append(w)
+        sum_weights += w
+        
+    sub_prices = prices[-window:]
+    if sum_weights == 0:
+        return sub_prices[-1]
+    return sum(p * w for p, w in zip(sub_prices, weights)) / sum_weights
+
+def calculate_ema(prices, period):
+    if len(prices) < period:
+        return prices[-1]
+    multiplier = 2 / (period + 1)
+    ema = sum(prices[:period]) / period
+    for price in prices[period:]:
+        ema = (price - ema) * multiplier + ema
+    return ema
+
+def analyze_market(symbol_raw="BTCUSDT", symbol_display="BTC/USDT"):
+    # ტაიმფრეიმები: 15m (სკალპინგი), 1h (იმპულსი), 4h (ტრენდი)
+    candles_15m = fetch_binance_ohlcv(symbol=symbol_raw, interval="15m", limit=100)
+    candles_1h = fetch_binance_ohlcv(symbol=symbol_raw, interval="1h", limit=50)
+    candles_4h = fetch_binance_ohlcv(symbol=symbol_raw, interval="4h", limit=50)
+
+    if not candles_15m or not candles_1h or not candles_4h:
+        return None
+
+    closes_15m = [float(c[4]) for c in candles_15m]
+    closes_1h = [float(c[4]) for c in candles_1h]
+    closes_4h = [float(c[4]) for c in candles_4h]
+    current_price = closes_15m[-1]
+
+    # 1. გრძელვადიანი ტრენდის ფილტრი ALMA (200, 0.7, 20) 4H და 1H ტაიმფრეიმზე
+    alma_200_4h = calculate_alma(closes_4h, window=min(200, len(closes_4h)), offset=0.7, sigma=20.0)
+    trend_4h = "LONG" if closes_4h[-1] > alma_200_4h else "SHORT"
+
+    alma_200_1h = calculate_alma(closes_1h, window=min(200, len(closes_1h)), offset=0.7, sigma=20.0)
+    trend_1h = "LONG" if closes_1h[-1] > alma_200_1h else "SHORT"
+
+    # 2. 15 წუთიანი სკალპინგი EMA 9 / 21 გადაკვეთით
+    ema_9_15m = calculate_ema(closes_15m, 9)
+    ema_21_15m = calculate_ema(closes_15m, 21)
+    scalp_dir = "LONG" if ema_9_15m > ema_21_15m else "SHORT"
+
+    # ტრენდის საპირისპირო სიგნალების მკაცრი ბლოკირება
+    if trend_4h != scalp_dir or trend_1h != scalp_dir:
+        logging.info(f"[{symbol_display}] Filtered: Counter-trend signal blocked (4H Trend: {trend_4h}, 1H Trend: {trend_1h}, Scalp: {scalp_dir})")
+        return None
+
+    score = 75 # რადგან ტრენდი და სკალპინგი ემთხვევა
+    factors = [
+        f"🟢 **4H Trend (ALMA 200):** {trend_4h}",
+        f"🟢 **1H Trend (ALMA 200):** {trend_1h}",
+        f"⚡ **15M Scalp (EMA 9/21):** {scalp_dir} Crossover"
+    ]
+
+    # Risk/Reward გათვლა: 1:1.5 დან 1:2.0 მდე
+    risk = current_price * 0.01  # 1% რისკი SL-ისთვის
+    if scalp_dir == "LONG":
+        sl = format_price(current_price - risk)
+        tp1 = format_price(current_price + (risk * 1.5)) # TP1 -> 1:1.5
+        tp2 = format_price(current_price + (risk * 2.0)) # TP2 -> 1:2.0
+    else:
+        sl = format_price(current_price + risk)
+        tp1 = format_price(current_price - (risk * 1.5)) # TP1 -> 1:1.5
+        tp2 = format_price(current_price - (risk * 2.0)) # TP2 -> 1:2.0
+
+    return {
+        "raw_symbol": symbol_raw,
+        "symbol": symbol_display,
+        "direction": scalp_dir,
+        "score": score,
+        "price": format_price(current_price),
+        "sl": sl,
+        "tp1": tp1,
+        "tp2": tp2,
+        "factors": factors
+    }
+
+def poll_telegram_updates(subscribed_users):
+    offset = 0
+    while True:
+        try:
+            if TELEGRAM_BOT_TOKEN:
+                url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates?offset={offset}&timeout=30"
+                res = requests.get(url, timeout=35).json()
+                if res.get("ok"):
+                    for result in res.get("result", []):
+                        offset = result["update_id"] + 1
+                        message = result.get("message", {})
+                        chat_id = message.get("chat", {}).get("id")
+                        text = message.get("text", "")
+
+                        if chat_id and text == "/start":
+                            if chat_id not in subscribed_users:
+                                subscribed_users.add(chat_id)
+                                save_json(USER_FILE, list(subscribed_users))
+                            send_telegram_message(chat_id, "🤖 **Nexus Scalp Engine Active!**\n\n📊 ალგორითმი მუშაობს: ALMA (200/0.7/20) + EMA 9/21 სკალპინგი. ტრენდის საპირისპირო სიგნალები დაბლოკილია.")
+        except Exception as e:
+            logging.error(f"Polling error: {e}")
+            time.sleep(5)
+        time.sleep(1)
+
+def heartbeat_loop(subscribed_users):
+    """საათობრივი მიმოხილვა (Heartbeat) ბოტის მუშაობის შესამოწმებლად"""
+    while True:
+        time.sleep(3600) # ყოველ 1 საათში
+        if subscribed_users:
+            msg = "🛡️ **Nexus ბოტის საათობრივი ანგარიში**\n\n⏱️ სტატუსი: სისტემა მუშაობს რეჟიმში 24/7.\n🔍 აქტივები: BTC, SOL, HYPE კონტროლქვეშაა (ტრენდული ფილტრი აქტიურია)."
+            for u_id in list(subscribed_users):
+                send_telegram_message(u_id, msg)
+
+def scan_loop(subscribed_users):
+    assets = [
+        {"raw": "BTCUSDT", "display": "BTC/USDT"},
+        {"raw": "SOLUSDT", "display": "SOL/USDT"},
+        {"raw": "HYPEUSDT", "display": "HYPE/USDT"}
+    ]
 
     while True:
         try:
-            await check_market_job()
-            cycle_count += 1
-
-            # ყოველ 4 ციკლში ერთხელ (რადგან 1 ციკლი = 15 წუთი, 4 ციკლი = 1 საათი)
-            if cycle_count >= 4:
-                now_str = datetime.now().strftime('%Y-%m-%d %H:%M')
-                status_msg = (
-                    f"🛡 <b>Nexus ბოტის საათობრივი ანგარიში</b>\n"
-                    f"⏱ დრო: {now_str}\n"
-                    f"📊 სტატუსი: სისტემა მუშაობს რეჟიმში 24/7.\n"
-                    f"🔍 აქტივები: BTC, SOL, HYPE კონტროლ ქვეშაა."
-                )
-                await send_telegram_message(status_msg)
-                cycle_count = 0  # გადატვირთვა
-
+            if subscribed_users:
+                for asset in assets:
+                    res = analyze_market(asset["raw"], asset["display"])
+                    if res:
+                        factors_text = "\n".join(res["factors"])
+                        msg = f"🚀 **NEXUS SCALP SIGNAL**\n\n🔹 `{res['symbol']}` ({res['direction']})\n🎯 **Score:** `{res['score']}%`\n\n{factors_text}\n\n💰 **Entry:** `${res['price']}`\n🛑 **SL:** `${res['sl']}`\n🎯 **TP1 (1:1.5):** `${res['tp1']}`\n🎯 **TP2 (1:2.0):** `${res['tp2']}`"
+                        
+                        for u_id in list(subscribed_users):
+                            send_telegram_message(u_id, msg)
+                    time.sleep(5)
         except Exception as e:
-            logging.error(f"Error in main loop: {e}")
-
-        # 15 წუთიანი ინტერვალი სკანირებებს შორის
-        await asyncio.sleep(900)
-
+            logging.error(f"Scan error: {e}")
+        python_interval = 180 # 3 წუთიანი სკანირების ციკლი
+        time.sleep(python_interval)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    subscribed_users = set(load_json(USER_FILE, []))
+    Thread(target=poll_telegram_updates, args=(subscribed_users,), daemon=True).start()
+    Thread(target=heartbeat_loop, args=(subscribed_users,), daemon=True).start()
+    Thread(target=scan_loop, args=(subscribed_users,), daemon=True).start()
+    run_web_server()
