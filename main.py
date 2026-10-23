@@ -21,15 +21,13 @@ stats_data = {
     "losses": 0
 }
 
-# მიმდინარე ღია პოზიციები თვალთვალისთვის
 active_signals = []
 
-def calculate_alma(series, window=200, offset=0.7, sigma=6.0):
-    m = offset * (window - 1)
-    s = window / sigma
-    weights = np.exp(-((np.arange(window) - m) ** 2) / (2 * (s ** 2)))
-    weights /= weights.sum()
-    return series.rolling(window=window).apply(lambda x: np.dot(x, weights), raw=True)
+# ფონური სიგნალი იმის დასადასტურებლად, რომ ბოტი მუშაობს (Heartbeat)
+async def send_heartbeat(context: ContextTypes.DEFAULT_TYPE):
+    if TELEGRAM_CHAT_ID:
+        heartbeat_text = "🟢 **Nexus Status:** ბოტი აქტიურად მუშაობს და აკვირდება ბაზარს (1h EMA 9/21)."
+        await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=heartbeat_text, parse_mode="Markdown")
 
 async def check_ema_strategy(context: ContextTypes.DEFAULT_TYPE):
     global active_signals, stats_data
@@ -37,11 +35,11 @@ async def check_ema_strategy(context: ContextTypes.DEFAULT_TYPE):
     exchange = ccxt.bingx()
     
     try:
-        # 1. ჯერ შევამოწმოთ უკვე გაშვებული სიგნალების ბედი (TP / SL შემოწმება)
+        # 1. TP / SL მონიტორინგი არსებული პოზიციებისთვის
         for sig in active_signals[:]:
             symbol = sig['symbol']
             ohlcv = await exchange.fetch_ohlcv(symbol, timeframe='1h', limit=5)
-            current_price = ohlcv[-1][4] # მიმდინარე ფასი (Close)
+            current_price = ohlcv[-1][4]
             
             if sig['type'] == 'LONG':
                 if current_price >= sig['tp']:
@@ -67,9 +65,8 @@ async def check_ema_strategy(context: ContextTypes.DEFAULT_TYPE):
                     if TELEGRAM_CHAT_ID:
                         await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=f"❌ **სტოპ-ლოსი (LOSS)!**\n🪙 `{symbol}`\n🛑 ფასი: `{current_price}`")
 
-        # 2. ახალი სიგნალების ძებნა (1h EMA 9/21 კვეთა + ALMA 200 ფილტრი)
+        # 2. ახალი სიგნალების ძებნა (1h EMA 9/21 კვეთა)
         for symbol in symbols:
-            # გავფილტროთ, რომ ერთ სიმბოლოზე ერთდროულად რამდენიმე ღია სიგნალი არ იყოს
             if any(s['symbol'] == symbol for s in active_signals):
                 continue
 
@@ -78,25 +75,19 @@ async def check_ema_strategy(context: ContextTypes.DEFAULT_TYPE):
             
             df['EMA_9'] = df['close'].ewm(span=9, adjust=False).mean()
             df['EMA_21'] = df['close'].ewm(span=21, adjust=False).mean()
-            df['ALMA_200'] = calculate_alma(df['close'], window=200, offset=0.7)
             
             prev_row = df.iloc[-2]
             last_row = df.iloc[-1]
-            
             current_price = last_row['close']
-            alma_val = last_row['ALMA_200']
             
             bullish_crossover = (prev_row['EMA_9'] <= prev_row['EMA_21']) and (last_row['EMA_9'] > last_row['EMA_21'])
             bearish_crossover = (prev_row['EMA_9'] >= prev_row['EMA_21']) and (last_row['EMA_9'] < last_row['EMA_21'])
             
             signal_text = None
             
-            # ლონგი: კვეთა ზევით + ფასი ALMA 200-ის ზემოთ
-            if bullish_crossover and current_price > alma_val:
-                # პირობითი რისკ-მოგება 1:1.5 (ვთქვათ 1% სტოპი, 1.5% ტეიქი)
+            if bullish_crossover:
                 sl = current_price * 0.99
                 tp = current_price * 1.015
-                
                 active_signals.append({'symbol': symbol, 'type': 'LONG', 'entry': current_price, 'tp': tp, 'sl': sl})
                 stats_data["total_signals"] += 1
                 
@@ -104,15 +95,12 @@ async def check_ema_strategy(context: ContextTypes.DEFAULT_TYPE):
                     f"🚀 **LONG SIGNAL (1h)**\n"
                     f"🪙 წყვილი: `{symbol}`\n"
                     f"🟢 შესვლა: `{current_price}`\n"
-                    f"🎯 TP: `{tp:.2f}` | 🛑 SL: `{sl:.2f}`\n"
-                    f"📊 ტრენდი: ALMA 200 ზემოთ"
+                    f"🎯 TP: `{tp:.2f}` | 🛑 SL: `{sl:.2f}`"
                 )
             
-            # შორტი: კვეთა ქვევით + ფასი ALMA 200-ის ქვემოთ
-            elif bearish_crossover and current_price < alma_val:
+            elif bearish_crossover:
                 sl = current_price * 1.01
                 tp = current_price * 0.985
-                
                 active_signals.append({'symbol': symbol, 'type': 'SHORT', 'entry': current_price, 'tp': tp, 'sl': sl})
                 stats_data["total_signals"] += 1
                 
@@ -120,8 +108,7 @@ async def check_ema_strategy(context: ContextTypes.DEFAULT_TYPE):
                     f"📉 **SHORT SIGNAL (1h)**\n"
                     f"🪙 წყვილი: `{symbol}`\n"
                     f"🔴 შესვლა: `{current_price}`\n"
-                    f"🎯 TP: `{tp:.2f}` | 🛑 SL: `{sl:.2f}`\n"
-                    f"📊 ტრენდი: ALMA 200 ქვემოთ"
+                    f"🎯 TP: `{tp:.2f}` | 🛑 SL: `{sl:.2f}`"
                 )
             
             if signal_text and TELEGRAM_CHAT_ID:
@@ -133,7 +120,7 @@ async def check_ema_strategy(context: ContextTypes.DEFAULT_TYPE):
         await exchange.close()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🤖 Nexus სუფთა EMA 9/21 სტრატეგია (1h + ALMA) და სტატისტიკის თვალთვალი აქტიურია!")
+    await update.message.reply_text("🤖 Nexus სუფთა EMA 9/21 სტრატეგია და საათობრივი სტატუსის შეტყობინებები ჩართულია!")
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total = stats_data["total_signals"]
@@ -163,8 +150,10 @@ def main():
     
     job_queue = application.job_queue
     if job_queue:
-        # შეამოწმოს ყოველ 1 საათში ერთხელ
+        # ბაზრის შემოწმება ყოველ 1 საათში ერთხელ
         job_queue.run_repeating(check_ema_strategy, interval=3600, first=10)
+        # საათობრივი შეტყობინება იმის შესახებ, რომ ბოტი ცოცხალია და მუშაობს (هر 1 საათში)
+        job_queue.run_repeating(send_heartbeat, interval=3600, first=300)
 
     application.run_polling()
 
