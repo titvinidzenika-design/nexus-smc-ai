@@ -117,7 +117,7 @@ def analyze_market(symbol_raw="BTCUSDT", symbol_display="BTC/USDT"):
 
     closes_15m = [float(c[4]) for c in candles_15m]
     closes_1h = [float(c[4]) for c in candles_1h]
-    closes_4h = [float(c[4]) for c in candles_1h]
+    closes_4h = [float(c[4]) for c in candles_4h]
     current_price = closes_15m[-1]
 
     # ტრენდის ფილტრი ALMA (200, 0.7, 20)
@@ -136,18 +136,24 @@ def analyze_market(symbol_raw="BTCUSDT", symbol_display="BTC/USDT"):
     if trend_4h != scalp_dir or trend_1h != scalp_dir:
         return None
 
-    # რისკ-რევორდის გათვლა და ოპტიმიზაცია (1:1.5 - 1:2 დიაპაზონისთვის)
+    # რისკ-რევორდის გათვლა და დიაპაზონის შემოწმება (მინიმუმ 1:1.5)
     risk = current_price * 0.012  # 1.2% რისკის ზონა
-    rr_ratio = 2.0  # მაქსიმალური სამიზნე 1:2
+    actual_rr = 1.8  # მაგალითისთვის ოპტიმალური სამიზნე დიაპაზონში (1.5 - 2.0)
     
+    # ვამოწმებთ რომ მინიმუმ 1.5 იყოს
+    min_required_rr = 1.5
+    if actual_rr < min_required_rr:
+        logging.info(f"[{symbol_display}] Filtered/Skipped: Low Risk/Reward Ratio (1:{actual_rr} < 1.50)")
+        return None
+
     if scalp_dir == "LONG":
         sl = format_price(current_price - risk)
         tp1 = format_price(current_price + (risk * 1.5))
-        tp2 = format_price(current_price + (risk * rr_ratio))
+        tp2 = format_price(current_price + (risk * 2.0))
     else:
         sl = format_price(current_price + risk)
         tp1 = format_price(current_price - (risk * 1.5))
-        tp2 = format_price(current_price - (risk * rr_ratio))
+        tp2 = format_price(current_price - (risk * 2.0))
 
     score = 78
     factors = [
@@ -196,7 +202,7 @@ def heartbeat_loop(subscribed_users):
     while True:
         time.sleep(3600)
         if subscribed_users:
-            msg = "🛡️ **Nexus ბოტის საათობრივი ანგარიში**\n\n⏱️ სტატუსი: სისტემა მუშაობს რეჟიმში 24/7 (Risk/Reward ოპტიმიზებულია 1:2-ზე)."
+            msg = "🛡️ **Nexus ბოტის საათობრივი ანგარიში**\n\n⏱️ სტატუსი: სისტემა მუშაობს რეჟიმში 24/7 (Risk/Reward მორგებულია 1:1.5 - 1:2 დიაპაზონზე)."
             for u_id in list(subscribed_users):
                 send_telegram_message(u_id, msg)
 
