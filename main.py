@@ -23,11 +23,15 @@ stats_data = {
 
 active_signals = []
 
-# ფონური სიგნალი იმის დასადასტურებლად, რომ ბოტი მუშაობს (Heartbeat)
+# საათობრივი Heartbeat შეტყობინება
 async def send_heartbeat(context: ContextTypes.DEFAULT_TYPE):
     if TELEGRAM_CHAT_ID:
         heartbeat_text = "🟢 **Nexus Status:** ბოტი აქტიურად მუშაობს და აკვირდება ბაზარს (1h EMA 9/21)."
-        await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=heartbeat_text, parse_mode="Markdown")
+        try:
+            await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=heartbeat_text, parse_mode="Markdown")
+            logger.info("Heartbeat შეტყობინება გაიგზავნა წარმატებით.")
+        except Exception as e:
+            logger.error(f"ვერ მოხერხდა Heartbeat შეტყობინების გაგზავნა: {e}")
 
 async def check_ema_strategy(context: ContextTypes.DEFAULT_TYPE):
     global active_signals, stats_data
@@ -150,10 +154,10 @@ def main():
     
     job_queue = application.job_queue
     if job_queue:
-        # ბაზრის შემოწმება ყოველ 1 საათში ერთხელ
+        # ბაზრის შემოწმება ყოველ 1 საათში ერთხელ (დაწყება 10 წამში)
         job_queue.run_repeating(check_ema_strategy, interval=3600, first=10)
-        # საათობრივი შეტყობინება იმის შესახებ, რომ ბოტი ცოცხალია და მუშაობს (هر 1 საათში)
-        job_queue.run_repeating(send_heartbeat, interval=3600, first=300)
+        # საათობრივი Heartbeat შეტყობინება (დაწყება 20 წამში, შემდეგ ყოველ 1 საათში)
+        job_queue.run_repeating(send_heartbeat, interval=3600, first=20)
 
     application.run_polling()
 
