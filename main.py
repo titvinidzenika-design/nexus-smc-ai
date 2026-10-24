@@ -1,19 +1,18 @@
 import os
 import logging
-import asyncio
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 import ccxt.async_support as ccxt
 import pandas as pd
-import numpy as np
 
 # ლოგირება
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# გლობალური ცვლადები სტატისტიკისა და ჩათისთვის
+# სტატისტიკისა და აქტიური სიგნალების მეხსიერება
 stats_data = {
     "total_signals": 0,
     "wins": 0,
@@ -21,24 +20,19 @@ stats_data = {
 }
 
 active_signals = []
-# აქ ავტომატურად ჩაიწერება თქვენი ID, როცა /start-ს მიწერთ
-USER_CHAT_ID = None
 
 # საათობრივი Heartbeat შეტყობინება
 async def send_heartbeat(context: ContextTypes.DEFAULT_TYPE):
-    global USER_CHAT_ID
-    if USER_CHAT_ID:
+    if TELEGRAM_CHAT_ID:
         heartbeat_text = "🟢 **Nexus Status:** ბოტი აქტიურად მუშაობს და აკვირდება ბაზარს (1h EMA 9/21)."
         try:
-            await context.bot.send_message(chat_id=USER_CHAT_ID, text=heartbeat_text, parse_mode="Markdown")
+            await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=heartbeat_text, parse_mode="Markdown")
             logger.info("Heartbeat შეტყობინება გაიგზავნა წარმატებით.")
         except Exception as e:
             logger.error(f"ვერ მოხერხდა Heartbeat შეტყობინების გაგზავნა: {e}")
-    else:
-        logger.warning("USER_CHAT_ID ჯერ არ არის ცნობილი. გთხოვთ მიწეროთ ბოტს /start")
 
 async def check_ema_strategy(context: ContextTypes.DEFAULT_TYPE):
-    global active_signals, stats_data, USER_CHAT_ID
+    global active_signals, stats_data
     symbols = ['BTC/USDT', 'SOL/USDT', 'HYPE/USDT']
     exchange = ccxt.bingx()
     
@@ -53,27 +47,27 @@ async def check_ema_strategy(context: ContextTypes.DEFAULT_TYPE):
                 if current_price >= sig['tp']:
                     stats_data["wins"] += 1
                     active_signals.remove(sig)
-                    if USER_CHAT_ID:
-                        await context.bot.send_message(chat_id=USER_CHAT_ID, text=f"✅ **TP მიღწეულია (WIN)!**\n🪙 `{symbol}`\n🎯 ფასი: `{current_price}`")
+                    if TELEGRAM_CHAT_ID:
+                        await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=f"✅ **TP მიღწეულია (WIN)!**\n🪙 `{symbol}`\n🎯 ფასი: `{current_price}`", parse_mode="Markdown")
                 elif current_price <= sig['sl']:
                     stats_data["losses"] += 1
                     active_signals.remove(sig)
-                    if USER_CHAT_ID:
-                        await context.bot.send_message(chat_id=USER_CHAT_ID, text=f"❌ **სტოპ-ლოსი (LOSS)!**\n🪙 `{symbol}`\n🛑 ფასი: `{current_price}`")
+                    if TELEGRAM_CHAT_ID:
+                        await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=f"❌ **სტოპ-ლოსი (LOSS)!**\n🪙 `{symbol}`\n🛑 ფასი: `{current_price}`", parse_mode="Markdown")
                         
             elif sig['type'] == 'SHORT':
                 if current_price <= sig['tp']:
                     stats_data["wins"] += 1
                     active_signals.remove(sig)
-                    if USER_CHAT_ID:
-                        await context.bot.send_message(chat_id=USER_CHAT_ID, text=f"✅ **TP მიღწეულია (WIN)!**\n🪙 `{symbol}`\n🎯 ფასი: `{current_price}`")
+                    if TELEGRAM_CHAT_ID:
+                        await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=f"✅ **TP მიღწეულია (WIN)!**\n🪙 `{symbol}`\n🎯 ფასი: `{current_price}`", parse_mode="Markdown")
                 elif current_price >= sig['sl']:
                     stats_data["losses"] += 1
                     active_signals.remove(sig)
-                    if USER_CHAT_ID:
-                        await context.bot.send_message(chat_id=USER_CHAT_ID, text=f"❌ **სტოპ-ლოსი (LOSS)!**\n🪙 `{symbol}`\n🛑 ფასი: `{current_price}`")
+                    if TELEGRAM_CHAT_ID:
+                        await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=f"❌ **სტოპ-ლოსი (LOSS)!**\n🪙 `{symbol}`\n🛑 ფასი: `{current_price}`", parse_mode="Markdown")
 
-        # 2. ახალი სიგნალების ძებნა (1h EMA 9/21 კვეთა)
+        # 2. ახალი სიგნალების ძებნა (სუფთა 1h EMA 9/21 კვეთა)
         for symbol in symbols:
             if any(s['symbol'] == symbol for s in active_signals):
                 continue
@@ -119,8 +113,8 @@ async def check_ema_strategy(context: ContextTypes.DEFAULT_TYPE):
                     f"🎯 TP: `{tp:.2f}` | 🛑 SL: `{sl:.2f}`"
                 )
             
-            if signal_text and USER_CHAT_ID:
-                await context.bot.send_message(chat_id=USER_CHAT_ID, text=signal_text, parse_mode="Markdown")
+            if signal_text and TELEGRAM_CHAT_ID:
+                await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=signal_text, parse_mode="Markdown")
                 
     except Exception as e:
         logger.error(f"შეცდომა სტრატეგიის შემოწმებისას: {e}")
@@ -128,9 +122,7 @@ async def check_ema_strategy(context: ContextTypes.DEFAULT_TYPE):
         await exchange.close()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global USER_CHAT_ID
-    USER_CHAT_ID = update.effective_chat.id
-    await update.message.reply_text(f"🤖 Nexus სუფთა EMA 9/21 სტრატეგია ჩართულია!\n✅ თქვენი Chat ID ({USER_CHAT_ID}) წარმატებით დამახსოვრდა.")
+    await update.message.reply_text("🤖 Nexus სუფთა EMA 9/21 სტრატეგია ჩართულია!")
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total = stats_data["total_signals"]
@@ -161,7 +153,7 @@ def main():
     job_queue = application.job_queue
     if job_queue:
         job_queue.run_repeating(check_ema_strategy, interval=3600, first=10)
-        job_queue.run_repeating(send_heartbeat, interval=3600, first=20)
+        job_queue.run_repeating(send_heartbeat, interval=3600, first=15)
 
     application.run_polling()
 
