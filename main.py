@@ -5,14 +5,12 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 import ccxt.async_support as ccxt
 import pandas as pd
 
-# ლოგირება
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# სტატისტიკისა და აქტიური სიგნალების მეხსიერება
 stats_data = {
     "total_signals": 0,
     "wins": 0,
@@ -21,15 +19,14 @@ stats_data = {
 
 active_signals = []
 
-# საათობრივი Heartbeat შეტყობინება
+# საათობრივი შეტყობინება, რომელიც ადასტურებს, რომ ბოტი ცოცხალია და მუშაობს
 async def send_heartbeat(context: ContextTypes.DEFAULT_TYPE):
     if TELEGRAM_CHAT_ID:
         heartbeat_text = "🟢 **Nexus Status:** ბოტი აქტიურად მუშაობს და აკვირდება ბაზარს (1h EMA 9/21)."
         try:
             await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=heartbeat_text, parse_mode="Markdown")
-            logger.info("Heartbeat შეტყობინება გაიგზავნა წარმატებით.")
         except Exception as e:
-            logger.error(f"ვერ მოხერხდა Heartbeat შეტყობინების გაგზავნა: {e}")
+            logger.error(f"Heartbeat შეცდომა: {e}")
 
 async def check_ema_strategy(context: ContextTypes.DEFAULT_TYPE):
     global active_signals, stats_data
@@ -37,7 +34,7 @@ async def check_ema_strategy(context: ContextTypes.DEFAULT_TYPE):
     exchange = ccxt.bingx()
     
     try:
-        # 1. TP / SL მონიტორინგი არსებული პოზიციებისთვის
+        # არსებული პოზიციების TP/SL მონიტორინგი
         for sig in active_signals[:]:
             symbol = sig['symbol']
             ohlcv = await exchange.fetch_ohlcv(symbol, timeframe='1h', limit=5)
@@ -67,7 +64,7 @@ async def check_ema_strategy(context: ContextTypes.DEFAULT_TYPE):
                     if TELEGRAM_CHAT_ID:
                         await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=f"❌ **სტოპ-ლოსი (LOSS)!**\n🪙 `{symbol}`\n🛑 ფასი: `{current_price}`", parse_mode="Markdown")
 
-        # 2. ახალი სიგნალების ძებნა (სუფთა 1h EMA 9/21 კვეთა)
+        # ახალი სიგნალების ძებნა სუფთა EMA 9/21 კვეთით
         for symbol in symbols:
             if any(s['symbol'] == symbol for s in active_signals):
                 continue
@@ -92,32 +89,20 @@ async def check_ema_strategy(context: ContextTypes.DEFAULT_TYPE):
                 tp = current_price * 1.015
                 active_signals.append({'symbol': symbol, 'type': 'LONG', 'entry': current_price, 'tp': tp, 'sl': sl})
                 stats_data["total_signals"] += 1
-                
-                signal_text = (
-                    f"🚀 **LONG SIGNAL (1h)**\n"
-                    f"🪙 წყვილი: `{symbol}`\n"
-                    f"🟢 შესვლა: `{current_price}`\n"
-                    f"🎯 TP: `{tp:.2f}` | 🛑 SL: `{sl:.2f}`"
-                )
+                signal_text = f"🚀 **LONG SIGNAL (1h)**\n🪙 წყვილი: `{symbol}`\n🟢 შესვლა: `{current_price}`\n🎯 TP: `{tp:.2f}` | 🛑 SL: `{sl:.2f}`"
             
             elif bearish_crossover:
                 sl = current_price * 1.01
                 tp = current_price * 0.985
                 active_signals.append({'symbol': symbol, 'type': 'SHORT', 'entry': current_price, 'tp': tp, 'sl': sl})
                 stats_data["total_signals"] += 1
-                
-                signal_text = (
-                    f"📉 **SHORT SIGNAL (1h)**\n"
-                    f"🪙 წყვილი: `{symbol}`\n"
-                    f"🔴 შესვლა: `{current_price}`\n"
-                    f"🎯 TP: `{tp:.2f}` | 🛑 SL: `{sl:.2f}`"
-                )
+                signal_text = f"📉 **SHORT SIGNAL (1h)**\n🪙 წყვილი: `{symbol}`\n🔴 შესვლა: `{current_price}`\n🎯 TP: `{tp:.2f}` | 🛑 SL: `{sl:.2f}`"
             
             if signal_text and TELEGRAM_CHAT_ID:
                 await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=signal_text, parse_mode="Markdown")
                 
     except Exception as e:
-        logger.error(f"შეცდომა სტრატეგიის შემოწმებისას: {e}")
+        logger.error(f"სტრატეგიის შეცდომა: {e}")
     finally:
         await exchange.close()
 
