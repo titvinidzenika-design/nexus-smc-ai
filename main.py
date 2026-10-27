@@ -19,29 +19,29 @@ stats_data = {
 
 active_signals = []
 
-# საათობრივი Heartbeat შეტყობინება
+# საათობრივი Heartbeat (ტესტისთვის შეგიძლიათ დროებით შეცვალოთ ინტერვალი)
 async def send_heartbeat(context: ContextTypes.DEFAULT_TYPE):
     if not TELEGRAM_CHAT_ID:
         return
     try:
-        heartbeat_text = "🟢 **Nexus Status:** ბოტი აქტიურად მუშაობს და აკვირდება ბაზარს (1h EMA + 4h Trend)."
+        heartbeat_text = "🟢 **Nexus Status:** ბოტი მუშაობს და აკვირდება ბაზარს."
         await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=heartbeat_text, parse_mode="Markdown")
-        logger.info("Heartbeat წარმატებით გაიგზავნა.")
+        logger.info("Heartbeat გაიგზავნა.")
     except Exception as e:
         logger.error(f"Heartbeat შეცდომა: {e}")
 
 async def check_ema_strategy(context: ContextTypes.DEFAULT_TYPE):
     global active_signals, stats_data
-    symbols = ['BTC/USDT', 'SOL/USDT', 'HYPE/USDT']
+    symbols = ['BTC/USDT', 'SOL/USDT']
     
     try:
-        exchange = ccxt.bingx()
+        exchange = ccxt.bingx({'options': {'defaultType': 'swap'}})
     except Exception as e:
         logger.error(f"ბირჟასთან დაკავშირების შეცდომა: {e}")
         return
 
     try:
-        # 1. TP / SL მონიტორინგი ღია პოზიციებისთვის
+        # 1. TP / SL მონიტორინგი
         for sig in active_signals[:]:
             symbol = sig['symbol']
             try:
@@ -74,21 +74,24 @@ async def check_ema_strategy(context: ContextTypes.DEFAULT_TYPE):
             except Exception as pos_err:
                 logger.error(f"პოზიციის შემოწმების შეცდომა {symbol}: {pos_err}")
 
-        # 2. ახალი სიგნალების ძებნა (1h EMA 9/21 კვეთა + 4h ტრენდის ფილტრი)
+        # 2. ახალი სიგნალების ძებნა დასრულებულ სანთლებზე (1h EMA 9/21 კვეთა + 4h ტრენდი)
         for symbol in symbols:
             if any(s['symbol'] == symbol for s in active_signals):
                 continue
 
             try:
-                # 1h მონაცემები კვეთისთვის
-                ohlcv_1h = await exchange.fetch_ohlcv(symbol, timeframe='1h', limit=250)
+                # 1h მონაცემები
+                ohlcv_1h = await exchange.fetch_ohlcv(symbol, timeframe='1h', limit=100)
+                if len(ohlcv_1h) < 30:
+                    continue
                 df_1h = pd.DataFrame(ohlcv_1h, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                 df_1h['EMA_9'] = df_1h['close'].ewm(span=9, adjust=False).mean()
                 df_1h['EMA_21'] = df_1h['close'].ewm(span=21, adjust=False).mean()
                 
-                prev_row = df_1h.iloc[-2]
-                last_row = df_1h.iloc[-1]
-                current_price = last_row['close']
+                # ვიყენებთ უკვე დასრულებულ სანთლებს (-3 და -2), რომ თავიდან ავიცილოთ ცრუ ტრიგერები
+                prev_row = df_1h.iloc[-3]
+                last_row = df_1h.iloc[-2]
+                current_price = df_1h.iloc[-1]['close'] # შესვლისთვის ვიღებთ მიმდინარე ფასს
                 
                 bullish_crossover = (prev_row['EMA_9'] <= prev_row['EMA_21']) and (last_row['EMA_9'] > last_row['EMA_21'])
                 bearish_crossover = (prev_row['EMA_9'] >= prev_row['EMA_21']) and (last_row['EMA_9'] < last_row['EMA_21'])
@@ -96,32 +99,31 @@ async def check_ema_strategy(context: ContextTypes.DEFAULT_TYPE):
                 if not bullish_crossover and not bearish_crossover:
                     continue
 
-                # 4h მონაცემები დიდი ტაიმფრეიმის ტრენდის შესამოწმებლად
+                # 4h ტრენდის ფილტრი
                 ohlcv_4h = await exchange.fetch_ohlcv(symbol, timeframe='4h', limit=50)
                 df_4h = pd.DataFrame(ohlcv_4h, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
                 df_4h['EMA_9'] = df_4h['close'].ewm(span=9, adjust=False).mean()
                 df_4h['EMA_21'] = df_4h['close'].ewm(span=21, adjust=False).mean()
                 
-                h4_row = df_4h.iloc[-1]
+                h4_row = df_4h.iloc[-2] # 4 საათიანიც დასრულებულ სანთელზე
                 h4_bullish = h4_row['EMA_9'] > h4_row['EMA_21']
                 h4_bearish = h4_row['EMA_9'] < h4_row['EMA_21']
                 
                 signal_text = None
                 
-                # სიგნალი იგზავნება მხოლოდ მაშინ, როცა 1h კვეთა ემთხვევა 4h ტრენდს
                 if bullish_crossover and h4_bullish:
                     sl = current_price * 0.99
                     tp = current_price * 1.015
                     active_signals.append({'symbol': symbol, 'type': 'LONG', 'entry': current_price, 'tp': tp, 'sl': sl})
                     stats_data["total_signals"] += 1
-                    signal_text = f"🚀 **LONG SIGNAL (1h + 4h Trend)**\n🪙 წყვილი: `{symbol}`\n🟢 შესვლა: `{current_price}`\n🎯 TP: `{tp:.2f}` | 🛑 SL: `{sl:.2f}`"
+                    signal_text = f"🚀 **LONG SIGNAL (1h + 4h)**\n🪙 წყვილი: `{symbol}`\n🟢 შესვლა: `{current_price}`\n🎯 TP: `{tp:.2f}` | 🛑 SL: `{sl:.2f}`"
                 
                 elif bearish_crossover and h4_bearish:
                     sl = current_price * 1.01
                     tp = current_price * 0.985
                     active_signals.append({'symbol': symbol, 'type': 'SHORT', 'entry': current_price, 'tp': tp, 'sl': sl})
                     stats_data["total_signals"] += 1
-                    signal_text = f"📉 **SHORT SIGNAL (1h + 4h Trend)**\n🪙 წყვილი: `{symbol}`\n🔴 შესვლა: `{current_price}`\n🎯 TP: `{tp:.2f}` | 🛑 SL: `{sl:.2f}`"
+                    signal_text = f"📉 **SHORT SIGNAL (1h + 4h)**\n🪙 წყვილი: `{symbol}`\n🔴 შესვლა: `{current_price}`\n🎯 TP: `{tp:.2f}` | 🛑 SL: `{sl:.2f}`"
                 
                 if signal_text and TELEGRAM_CHAT_ID:
                     await context.bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=signal_text, parse_mode="Markdown")
@@ -134,7 +136,7 @@ async def check_ema_strategy(context: ContextTypes.DEFAULT_TYPE):
         await exchange.close()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🤖 Nexus სტრატეგია (1h EMA + 4h Trend) ჩართულია!")
+    await update.message.reply_text("🤖 Nexus სტრატეგია ჩართულია და მზადაა!")
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total = stats_data["total_signals"]
@@ -143,12 +145,12 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     win_rate = (wins / total * 100) if total > 0 else 0
     
     stats_text = (
-        f"📊 **Nexus სავაჭრო სტატისტიკა:**\n\n"
-        f"🔹 სულ გენერირებული სიგნალი: `{total}`\n"
-        f"✅ მოგებული (TP): `{wins}`\n"
-        f"❌ წაგებული (SL): `{losses}`\n"
+        f"📊 **სავაჭრო სტატისტიკა:**\n\n"
+        f"🔹 სულ სიგნალი: `{total}`\n"
+        f"✅ მოგებული: `{wins}`\n"
+        f"❌ წაგებული: `{losses}`\n"
         f"📈 Win Rate: `{win_rate:.1f}%`\n"
-        f"🔄 მიმდინარე ღია პოზიციები: `{len(active_signals)}`"
+        f"🔄 ღია პოზიციები: `{len(active_signals)}`"
     )
     await update.message.reply_text(stats_text, parse_mode="Markdown")
 
@@ -164,6 +166,7 @@ def main():
     
     job_queue = application.job_queue
     if job_queue:
+        # ტესტირებისთვის შეგიძლიათ დროებით შეცვალოთ interval მაგალითად 60 წამით
         job_queue.run_repeating(check_ema_strategy, interval=3600, first=10)
         job_queue.run_repeating(send_heartbeat, interval=3600, first=15)
 
