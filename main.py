@@ -1,5 +1,7 @@
 import os
 import logging
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 import ccxt.async_support as ccxt
@@ -20,6 +22,19 @@ stats_data = {
 }
 
 active_signals = []
+
+# პატარა HTTP სერვერი, რომ Railway-მ „აიძულოს“ კონტეინერის მუშა მდგომარეობაში შენარჩუნება
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is alive!")
+
+def run_http_server():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
+    logger.info(f"HTTP სერვერი გაშვებულია პორტზე {port}")
+    server.serve_forever()
 
 # საათობრივი Heartbeat შეტყობინება
 async def send_heartbeat(context: ContextTypes.DEFAULT_TYPE):
@@ -83,7 +98,6 @@ async def check_ema_strategy(context: ContextTypes.DEFAULT_TYPE):
                 continue
 
             try:
-                # 1h მონაცემები კვეთისთვის
                 ohlcv_1h = await exchange.fetch_ohlcv(symbol, timeframe='1h', limit=100)
                 if len(ohlcv_1h) < 30:
                     continue
@@ -101,7 +115,6 @@ async def check_ema_strategy(context: ContextTypes.DEFAULT_TYPE):
                 if not bullish_crossover and not bearish_crossover:
                     continue
 
-                # 4h მონაცემები ზოგადი ტრენდის შესამოწმებლად
                 ohlcv_4h = await exchange.fetch_ohlcv(symbol, timeframe='4h', limit=50)
                 if len(ohlcv_4h) < 30:
                     continue
@@ -115,7 +128,6 @@ async def check_ema_strategy(context: ContextTypes.DEFAULT_TYPE):
                 
                 signal_text = None
                 
-                # სიგნალი იგზავნება მხოლოდ მაშინ, როცა 1h კვეთა ემთხვევა 4h ტრენდს
                 if bullish_crossover and h4_bullish:
                     sl = current_price * 0.99
                     tp = current_price * 1.015
@@ -140,7 +152,6 @@ async def check_ema_strategy(context: ContextTypes.DEFAULT_TYPE):
     finally:
         await exchange.close()
 
-# ტელეგრამის ბრძანებები
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🤖 Nexus სავაჭრო ბოტი (BTC, SOL, HYPE | 1h + 4h) წარმატებით გააქტიურდა!")
 
@@ -165,6 +176,10 @@ def main():
         logger.error("TELEGRAM_TOKEN არ არის მითითებული!")
         return
 
+    # ვუშვებთ HTTP სერვერს ცალკე ნაკადში (Thread), რომ Railway-მ პორტი დაინახოს და არ გათიშოს კონტეინერი
+    server_thread = threading.Thread(target=run_http_server, daemon=True)
+    server_thread.start()
+
     application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     
     application.add_handler(CommandHandler("start", start))
@@ -172,11 +187,9 @@ def main():
     
     job_queue = application.job_queue
     if job_queue:
-        # საათობრივი შემოწმება (3600 წამი = 1 საათი)
         job_queue.run_repeating(check_ema_strategy, interval=3600, first=10)
         job_queue.run_repeating(send_heartbeat, interval=3600, first=15)
 
-    # drop_pending_updates=True ხსნის ყოველგვარ Telegram Conflict შეცდომას
     application.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
