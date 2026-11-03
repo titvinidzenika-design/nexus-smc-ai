@@ -1,4 +1,3 @@
-python-telegram-bot
 ccxt
 pandas
-apscheduler
+python-telegram-bot
